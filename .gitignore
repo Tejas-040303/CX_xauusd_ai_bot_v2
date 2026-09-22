@@ -1,0 +1,17 @@
+# secrets
+.env
+
+# large / generated stuff
+data/
+models/
+logs/
+backtest_results/
+archive/
+src.zip
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+.ipynb_checkpoints/
