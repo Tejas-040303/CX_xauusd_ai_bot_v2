@@ -1,0 +1,35 @@
+# Project MIDAS v2 — Python dependencies
+#
+# Target interpreter: Python 3.12 (64-bit, Windows)
+#   - 3.12+ is REQUIRED: src/run_combined_bcd.py uses PEP 701 nested-quote
+#     f-strings, which are a SyntaxError on 3.11 and below.
+#   - MetaTrader5 ships win_amd64 wheels only, so 64-bit Windows is required
+#     for anything that touches the terminal (live trading + data download).
+#
+# Install:  pip install -r requirements.txt
+
+# ─── Broker / market data (Windows-only) ─────────────────
+MetaTrader5>=5.0.45
+
+# ─── Core numerics ───────────────────────────────────────
+pandas>=2.0
+numpy>=1.24
+
+# ─── Parquet I/O (strategy_e_* pipeline reads/writes .parquet) ──
+pyarrow>=14.0
+
+# ─── Strategy E model ────────────────────────────────────
+lightgbm>=4.0
+
+# ─── Metrics, calibration, Phase-6 meta-learner ──────────
+scikit-learn>=1.3
+
+# ─── Equity curves / evaluation charts (optional at runtime,
+#     guarded by try/except in the runners, but backtester needs it) ──
+matplotlib>=3.7
+
+# ─── Telegram HTTP API ───────────────────────────────────
+requests>=2.31
+
+# ─── .env loading (config.py) ────────────────────────────
+python-dotenv>=1.0
