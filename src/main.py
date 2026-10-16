@@ -3576,7 +3576,7 @@ Architecture:
   - TSL monitors open positions and trails SL dynamically
   - Position updates sent to Telegram every 3 minutes
   - Telegram command listener (/help /stop /start /pause /summary etc.)
-  - Risk manager enforces all The5ers compliance rules
+  - Risk manager enforces prop-style rules (modeled on The5ers)
   - State persists to disk (safe restart)
 
 Usage:
@@ -3609,8 +3609,9 @@ from config import (
     SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE, ACCOUNT_BALANCE,
     MAX_TRADE_RISK_PCT, MAX_DAILY_LOSS_PCT, THE5ERS_DAILY_LOSS_PCT,
     CONFIDENCE_THRESHOLD, SESSIONS,
-    BROKER_UTC_OFFSET_HOURS,
+    BROKER_TIME_ZONE, BROKER_TIME_SHIFT_HOURS,
 )
+from broker_time import expected_offset_now
 import retrain_e
 from feature_engineering import FeatureEngine
 from mt5_executor import MT5Executor
@@ -3858,21 +3859,29 @@ class MidasBot:
         print(f"  Initial balance ${r.initial_balance:,.2f} ({source}) → "
               f"max-loss floor ${r.max_loss_level:,.2f}")
         print(f"  Today's base ${r.day_base:,.2f} → ${r.max_trade_risk:.2f}/trade, "
-              f"${r.max_daily_loss:.2f}/day (The5ers daily ${r.the5ers_daily_limit:.2f})")
+              f"${r.max_daily_loss:.2f}/day (hard daily limit ${r.the5ers_daily_limit:.2f})")
 
     def _check_broker_utc_offset(self):
-        """Warn if the broker's clock isn't what the session features assume."""
+        """Check the configured broker-time rule against the live server clock.
+
+        Bar times are converted to UTC with that rule (broker_time.py), which
+        follows DST — so UTC+2 in winter and UTC+3 in summer are both fine.
+        Warn only when the live clock disagrees with the rule.
+        """
+        expected = expected_offset_now()
         offset = self.mt5.get_broker_utc_offset()
         if offset is None:
-            print("  Broker UTC offset: unknown (no fresh tick — market closed?)")
+            print(f"  Broker server time: UTC{expected:+d} expected "
+                  f"(can't confirm — no fresh tick, market closed?)")
             return
         print(f"  Broker server time: UTC{offset:+d}")
         self.risk.day_offset_hours = offset  # trading day = broker calendar day
-        if offset != BROKER_UTC_OFFSET_HOURS:
-            msg = (f"Broker server time is UTC{offset:+d}, but session-range features "
-                   f"(Strategy C's Asian range) assume UTC{BROKER_UTC_OFFSET_HOURS:+d}: "
-                   f"that window is {abs(offset - BROKER_UTC_OFFSET_HOURS)}h off "
-                   f"(usually a DST change).")
+        if offset != expected:
+            msg = (f"Broker server time is UTC{offset:+d}, but config's rule "
+                   f"({BROKER_TIME_ZONE} {BROKER_TIME_SHIFT_HOURS:+d}h) gives UTC{expected:+d} "
+                   f"now, so session times are {abs(offset - expected)}h off. Set "
+                   f"BROKER_TIME_ZONE / BROKER_TIME_SHIFT_HOURS in config.py to match "
+                   f"your broker.")
             print(f"  WARNING: {msg}")
             self.notifier.error(msg)
 
@@ -3887,7 +3896,7 @@ class MidasBot:
         print(f"  Dynamic TSL  : ON")
         print(f"  Dynamic Lots : 0.01-0.05")
         print(f"  Risk Cap     : {MAX_TRADE_RISK_PCT:.1%}/trade, {MAX_DAILY_LOSS_PCT:.0%}/day "
-              f"of the day's balance (The5ers {THE5ERS_DAILY_LOSS_PCT:.0%})")
+              f"of the day's balance (hard limit {THE5ERS_DAILY_LOSS_PCT:.0%})")
         print(f"  Session Lim  : 2 per session")
         print(f"  Cooldown     : 10 min")
 
@@ -4538,7 +4547,7 @@ class MidasBot:
             f"🛡️ <b>RISK STATUS</b>\n"
             f"Day base     : ${s['day_base']:,.2f}\n"
             f"Day loss     : ${s['day_loss']:.2f} of ${s['max_daily_loss']:.2f} "
-            f"(The5ers ${s['the5ers_daily_limit']:.2f})\n"
+            f"(hard limit ${s['the5ers_daily_limit']:.2f})\n"
             f"Remaining    : ${s['daily_remaining']:.2f}\n"
             f"Per trade    : ${s['max_trade_risk']:.2f}\n"
             f"Closed PnL   : ${s['daily_pnl']:+.2f}\n"

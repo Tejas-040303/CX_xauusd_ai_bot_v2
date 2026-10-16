@@ -1,6 +1,7 @@
 """
 Project MIDAS v2 — Live Risk Manager
-Real-time risk tracking for The5ers compliance.
+Real-time risk tracking. Hard limits follow The5ers-style prop rules
+(we don't trade a The5ers account; the rules are kept as a framework).
 
 Every dollar limit is derived from the live MT5 account, not from config:
 
@@ -28,8 +29,8 @@ from config import (
     MAX_DAILY_LOSS_PCT, MAX_TRADE_RISK_PCT,
     THE5ERS_DAILY_LOSS_PCT, THE5ERS_MAX_LOSS_PCT,
     LOT_SIZE_MIN, XAUUSD_POINT_VALUE, DAILY_STATE_FILE,
-    BROKER_UTC_OFFSET_HOURS,
 )
+from broker_time import expected_offset_now
 
 
 def _to_utc(dt: Optional[datetime]) -> datetime:
@@ -47,7 +48,7 @@ def _to_utc(dt: Optional[datetime]) -> datetime:
 class RiskManager:
     """
     Live risk management engine.
-    Enforces The5ers rules + our safety buffer.
+    Enforces the hard (The5ers-style) rules + our safety buffer.
     State persists to disk so bot can restart safely.
     """
 
@@ -75,7 +76,7 @@ class RiskManager:
         self.current_equity = None
         self.account_login = None     # MT5 account the saved state belongs to
         # Trading day = broker calendar day (The5ers resets at server midnight)
-        self.day_offset_hours = BROKER_UTC_OFFSET_HOURS
+        self.day_offset_hours = expected_offset_now()
 
         # Load persisted state
         self._load_state()

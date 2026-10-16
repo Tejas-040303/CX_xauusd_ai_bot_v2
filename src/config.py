@@ -37,7 +37,8 @@ MT5_TIMEFRAMES = {
 DATA_START_YEAR = 2021
 DATA_END_YEAR = 2026  # Up to current
 
-# ─── The5ers Rules ───────────────────────────────────────
+# ─── Account Rules (modeled on The5ers' prop-firm rules) ─
+# We don't trade a The5ers account; their rules are kept as the hard limits.
 # All risk is percentages. The live bot turns them into dollars from the MT5
 # account itself (RiskManager), so nothing here needs editing when the
 # account size changes:
@@ -46,8 +47,8 @@ DATA_END_YEAR = 2026  # Up to current
 #   - day's base       = higher of balance/equity at broker midnight
 #                        → daily stop and per-trade risk, recomputed daily
 ACCOUNT_BALANCE = None          # None = read from MT5; set a number to override
-THE5ERS_DAILY_LOSS_PCT = 0.05   # The5ers daily loss, from the day's base
-THE5ERS_MAX_LOSS_PCT = 0.10     # The5ers max loss, from the initial balance (fixed floor)
+THE5ERS_DAILY_LOSS_PCT = 0.05   # Hard daily loss limit, from the day's base
+THE5ERS_MAX_LOSS_PCT = 0.10     # Hard max loss, from the initial balance (fixed floor)
 PROFIT_TARGET_PCT = 0.10
 MIN_PROFITABLE_DAYS = 3
 MAX_INACTIVE_DAYS = 30
@@ -65,7 +66,7 @@ MAX_TRADE_RISK_PCT = 0.015   # Max loss per trade 1.5%   ($7.50 on $500)
 if not (0 < MAX_TRADE_RISK_PCT <= MAX_DAILY_LOSS_PCT < THE5ERS_DAILY_LOSS_PCT):
     raise ValueError(
         f"Risk settings out of order: need 0 < per-trade ({MAX_TRADE_RISK_PCT:.1%}) <= "
-        f"our daily stop ({MAX_DAILY_LOSS_PCT:.1%}) < The5ers daily ({THE5ERS_DAILY_LOSS_PCT:.1%})")
+        f"our daily stop ({MAX_DAILY_LOSS_PCT:.1%}) < hard daily limit ({THE5ERS_DAILY_LOSS_PCT:.1%})")
 
 # Dollar values for backtests and legacy modules (fixed capital). The live
 # bot does NOT use these — it computes them from the MT5 account each day.
@@ -83,7 +84,7 @@ COOLDOWN_SECONDS = 300        # 05 min between trades
 SPREAD_SIMULATION_PIPS = 2.5  # Simulated slippage for backtests
 
 # ─── Session Definitions (UTC) ───────────────────────────
-# Broker is UTC+2 (MetaQuotes), adjust if needed
+# Real UTC hours. Bar times are converted from broker time (broker_time.py)
 SESSIONS = {
     "asian":  {"start": 0, "end": 6},     # 00:00 - 06:00 UTC
     "london": {"start": 6, "end": 14},    # 06:00 - 14:00 UTC
@@ -143,10 +144,13 @@ E_TRAIN_YEARS = 4          # Rolling training window ending at the latest bar
 E_TEST_MONTHS = 6          # Out-of-sample block per walk-forward check
 E_MIN_TEST_AUC = 0.52      # New model must beat this on the latest unseen months
 
-# Hour offset between broker server time and UTC that the session-range
-# features assume (feature_engineering.compute_session_range). main.py warns
-# at startup if the live broker offset differs.
-BROKER_UTC_OFFSET_HOURS = 2
+# Broker server clock (MT5 bar times are server time, not UTC):
+# server time = time in BROKER_TIME_ZONE + BROKER_TIME_SHIFT_HOURS.
+# Default is the common "New York close" server: UTC+2 in winter, UTC+3 during
+# US daylight saving. For an EET server (EU DST dates) use "Europe/Athens", 0.
+# main.py checks this against the live server clock at startup.
+BROKER_TIME_ZONE = "America/New_York"
+BROKER_TIME_SHIFT_HOURS = 7
 
 # ─── Telegram Settings ───────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")

@@ -4,8 +4,8 @@ An automated gold (XAUUSD) trading bot for MetaTrader 5. Five strategies vote on
 every M5 candle: four rule-based (`A`–`D`) and one LightGBM model (`E`) that acts
 as both a **validator** of the others and an **independent signal generator**. A
 regime detector retunes the thresholds per market condition, a dynamic lot sizer
-maps conviction to position size, and a risk manager enforces The5ers prop-firm
-rules. Control and monitoring run through a Telegram bot.
+maps conviction to position size, and a risk manager enforces prop-firm-style
+rules (modeled on The5ers). Control and monitoring run through a Telegram bot.
 
 > **Coming back after a break?** Go straight to **[SETUP.md](SETUP.md)** — it is
 > the step-by-step runbook for reissuing tokens and getting the bot running again
@@ -21,7 +21,7 @@ rules. Control and monitoring run through a Telegram bot.
 | **Platform** | Windows 64-bit **only** (`MetaTrader5` ships `win_amd64` wheels exclusively) |
 | **Python** | **3.12** required — see [§7](#7-known-issues--gotchas) |
 | **Instrument** | XAUUSD, M5 decisions with M15 structural context |
-| **Account model** | The5ers evaluation; limits sized from the live MT5 account (+10% target / −10% max drawdown) |
+| **Account model** | Prop-style rules modeled on The5ers (not a The5ers account); limits sized from the live MT5 account (+10% target / −10% max drawdown) |
 | **Secrets needed** | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` — that's it |
 | **Claude API** | Declared in config, **never used**. `claude_brain.py` is empty. |
 | **MT5 credentials** | Not in `.env`. Inherited from the running MT5 terminal. |
@@ -152,20 +152,22 @@ progress (entry + 1 pip), then:
 
 ## 3. Risk model
 
-Two layers: The5ers' hard rules, and a tighter internal buffer that trips first.
+Two layers: hard rules modeled on The5ers' prop rules (we don't trade a The5ers
+account — the rules are kept as the framework), and a tighter internal buffer
+that trips first.
 All limits are **percentages**; `RiskManager` turns them into dollars from the
 MT5 account itself, so nothing needs editing when the account size changes:
 
 - **Initial balance** = the account's deposits in MT5 history (override with
   `ACCOUNT_BALANCE` in `config.py`) → fixed max-loss floor.
-- **Day's base** = higher of balance/equity at **broker midnight** (how The5ers
+- **Day's base** = higher of balance/equity at **broker midnight** (how The5ers-style rules
   measures daily loss) → daily stop and per-trade risk, recomputed every day
   and saved, so a restart mid-day can't reset it.
 - **Day's loss** = base − current equity (floating P/L counts).
 
-| Control | Internal (`config.py`) | The5ers limit | On a $500 day |
+| Control | Internal (`config.py`) | Hard limit (The5ers-style) | On a $500 day |
 |---|---|---|---|
-| Daily loss | `MAX_DAILY_LOSS_PCT` 4% of day's base | 5% of day's base | $20 (The5ers $25) |
+| Daily loss | `MAX_DAILY_LOSS_PCT` 4% of day's base | 5% of day's base | $20 (hard $25) |
 | Per-trade risk | `MAX_TRADE_RISK_PCT` 1.5% of day's base | — | $7.50 |
 | Total drawdown | — | 10% below initial balance (fixed) | floor $450 |
 | Lot-size reduction | at −20/−50/−80% of the day's stop; no new trades past −80% | — | −$4/−$10/−$16 |
@@ -173,7 +175,7 @@ MT5 account itself, so nothing needs editing when the account size changes:
 | Trades per session | 2 (`asian` / `london` / `london_ny_overlap` / `new_york`) | — | |
 | Cooldown | `COOLDOWN_SECONDS` = 300s between trades | — | |
 
-`config.py` refuses to load unless per-trade % ≤ daily stop % < The5ers' 5%.
+`config.py` refuses to load unless per-trade % ≤ daily stop % < the hard 5%.
 Startup prints the sized limits, warns if `ACCOUNT_BALANCE` is set and doesn't
 match the account's deposits, and resets the day's counters if MT5 is logged
 into a different account than the saved state belongs to. `/risk` in Telegram
@@ -205,7 +207,8 @@ CX_xauusd_ai_bot_v2/
     │
     ├── LIVE RUNTIME ────────────────────────────────────────────
     ├── mt5_executor.py        Orders, positions, bars, account info
-    ├── risk_manager.py        The5ers compliance, persisted state
+    ├── risk_manager.py        Hard + buffer risk limits, persisted state
+    ├── broker_time.py         Broker server time <-> UTC (DST-aware)
     ├── tsl_manager.py         Progressive trailing stop
     ├── dynamic_lot_sizer.py   Conviction -> 0.01-0.05 lots
     ├── regime_detector.py     Online regime classification
@@ -376,7 +379,7 @@ Symptom-first, since the failure modes are distinctive.
 | `Symbol XAUUSD not found` | broker uses a suffix (`XAUUSD.r`, `XAUUSDm`) | set `MT5_SYMBOL` in `config.py` to the exact Market Watch name |
 | `Strategy E model not found. E will be disabled.` | first retrain failed, or models elsewhere | `python src/retrain_e.py --force`; `MIDAS_PROJECT_ROOT` (SETUP Step 2) |
 | `Strategy E retrain rejected` | new model failed its out-of-sample check | old model kept; inspect printed AUC (SETUP Step 5) |
-| `Broker server time is UTC+3 ...` warning | broker DST; session-range features assume `BROKER_UTC_OFFSET_HOURS` | set it in `config.py` |
+| `Broker server time is UTC+X, but config's rule ... gives UTC+Y` | broker doesn't follow the configured clock rule | set `BROKER_TIME_ZONE` / `BROKER_TIME_SHIFT_HOURS` in `config.py` (default: New York + 7h = UTC+2 winter / UTC+3 summer; EET servers: `Europe/Athens`, 0) |
 | `Telegram: disabled (no token/chat_id)` | `.env` missing, blank, or unreadable | `.env` goes in the project root, beside `src/` |
 | Bot runs, no Telegram messages | token valid, wrong chat id | `/status` in the chat; notifier ignores other chat ids |
 | `ORDER FAILED: 10027` | algo trading disabled in terminal | MT5 → Tools → Options → Expert Advisors |
