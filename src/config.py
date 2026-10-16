@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Paths ───────────────────────────────────────────────
-PROJECT_ROOT = Path(r"E:\GenAI\Projects\CX_xauusd_ai_bot_v2")
+#PROJECT_ROOT = Path(r"E:\GenAI\Projects\CX_xauusd_ai_bot_v2")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_RAW = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -36,21 +37,21 @@ DATA_START_YEAR = 2021
 DATA_END_YEAR = 2026  # Up to current
 
 # ─── The5ers Rules ───────────────────────────────────────
-ACCOUNT_BALANCE = 5000
-PROFIT_TARGET = 5500          # +10%
-MAX_LOSS_LEVEL = 4500         # -10% total drawdown
-DAILY_LOSS_LIMIT_5ERS = 250   # -5% per day ($250)
+ACCOUNT_BALANCE = 500
+PROFIT_TARGET =  ACCOUNT_BALANCE * 1.10          # +10%
+MAX_LOSS_LEVEL =  ACCOUNT_BALANCE * 0.90         # -10% total drawdown
+DAILY_LOSS_LIMIT_5ERS =  ACCOUNT_BALANCE * 0.05   # -5% per day ($250)
 MIN_PROFITABLE_DAYS = 3
 MAX_INACTIVE_DAYS = 30
 
 # ─── Risk Settings (Our Safety Buffer) ──────────────────
 MAX_DAILY_LOSS = 100          # Below The5ers $250 limit
-MAX_TRADE_RISK = 55           # Per trade max loss in $
+MAX_TRADE_RISK =  ACCOUNT_BALANCE * 0.10           # Per trade max loss in USD ($50)
 LOT_SIZE_MIN = 0.01
 LOT_SIZE_MAX = 0.05
 LOT_SIZE_SINGLE = 0.01       # 1 strategy triggers
 LOT_SIZE_MULTI = 0.02        # 2+ strategies agree
-COOLDOWN_SECONDS = 600        # 10 min between trades
+COOLDOWN_SECONDS = 300        # 05 min between trades
 SPREAD_SIMULATION_PIPS = 2.5  # Simulated slippage for backtests
 
 # ─── Session Definitions (UTC) ───────────────────────────
