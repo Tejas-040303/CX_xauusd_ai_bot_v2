@@ -11,8 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Paths ───────────────────────────────────────────────
-#PROJECT_ROOT = Path(r"E:\GenAI\Projects\CX_xauusd_ai_bot_v2")
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Repo root (config.py lives in src/). Override with MIDAS_PROJECT_ROOT if your
+# data/models/logs live somewhere else.
+PROJECT_ROOT = Path(os.getenv("MIDAS_PROJECT_ROOT") or Path(__file__).resolve().parent.parent)
 DATA_RAW = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -66,6 +67,7 @@ SESSIONS = {
 SESSION_LIMITS = {
     "asian": 2,
     "london": 2,
+    "london_ny_overlap": 2,  # 12:00-14:00 UTC — was missing, so it fell back to "off" (0)
     "new_york": 2,
     "off": 0,  # No trades outside sessions
 }
@@ -105,6 +107,20 @@ XAUUSD_POINT_VALUE = 100  # $ per lot per $1 price move
 
 # Pip definition for gold (1 pip = $0.10 price movement)
 PIP_VALUE = 0.10  # $0.10 in price = 1 pip for XAUUSD
+
+# ─── Strategy E auto-retrain ─────────────────────────────
+# On startup (and on Saturdays while running) main.py checks how old the
+# model's training data is; past this age it downloads the missing bars from
+# MT5 and retrains. See retrain_e.py.
+E_MODEL_MAX_AGE_DAYS = 7
+E_TRAIN_YEARS = 4          # Rolling training window ending at the latest bar
+E_TEST_MONTHS = 6          # Out-of-sample block per walk-forward check
+E_MIN_TEST_AUC = 0.52      # New model must beat this on the latest unseen months
+
+# Hour offset between broker server time and UTC that the session-range
+# features assume (feature_engineering.compute_session_range). main.py warns
+# at startup if the live broker offset differs.
+BROKER_UTC_OFFSET_HOURS = 2
 
 # ─── Telegram Settings ───────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")

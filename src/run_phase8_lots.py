@@ -436,6 +436,8 @@ class CombinedABCDE_DynamicLot(StrategyBase):
                 n_strategies=n_agree, e_prob=e_prob, regime=regime,
                 daily_pnl=self._daily_pnl, atr=atr, sl_distance=sl_distance,
             )
+            if lot_result["lot_size"] <= 0:
+                return None  # Lot sizer's no-trade zone (same as live)
             best_signal.sub_conditions["dynamic_lot"] = lot_result["lot_size"]
             best_signal.sub_conditions["lot_factors"] = lot_result["factors"]
 
@@ -495,6 +497,8 @@ class CombinedABCDE_DynamicLot(StrategyBase):
                 n_strategies=0, e_prob=e_prob, regime=regime,
                 daily_pnl=self._daily_pnl, atr=atr, sl_distance=sl_dist,
             )
+            if lot_result["lot_size"] <= 0:
+                return None  # Lot sizer's no-trade zone (same as live)
             sub_conditions["dynamic_lot"] = lot_result["lot_size"]
 
         signal = TradeSignal(

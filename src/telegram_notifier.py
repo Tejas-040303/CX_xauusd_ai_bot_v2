@@ -25,6 +25,7 @@ Alerts:
   - Errors and warnings
 """
 
+import html
 import threading
 import time
 import traceback
@@ -33,7 +34,7 @@ from typing import Callable, Dict, Optional
 
 import requests
 
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MAX_TRADE_RISK, MAX_DAILY_LOSS
 
 
 class TelegramNotifier:
@@ -76,12 +77,30 @@ class TelegramNotifier:
         if not self.enabled:
             return
 
+        self._skip_pending_updates()
         self._polling_active = True
         self._polling_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name="TelegramPoller"
         )
         self._polling_thread.start()
         print("  Telegram command listener started")
+
+    def _skip_pending_updates(self):
+        """Mark commands sent while the bot was offline as read.
+
+        Without this, a /stop that was handled just before shutdown (but not
+        yet acknowledged to Telegram) is delivered again on the next start
+        and immediately stops the bot.
+        """
+        try:
+            resp = requests.get(f"{self.base_url}/getUpdates",
+                                params={"offset": -1, "timeout": 0}, timeout=10)
+            results = resp.json().get("result", []) if resp.status_code == 200 else []
+            if results:
+                self._last_update_id = results[-1]["update_id"]
+                print(f"  Telegram: skipped commands sent while offline")
+        except Exception as e:
+            print(f"  Telegram: could not skip pending updates: {e}")
 
     def stop_polling(self):
         """Stop the command listener."""
@@ -144,7 +163,7 @@ class TelegramNotifier:
                 if response:
                     self.send(response)
             except Exception as e:
-                self.send(f"⚠️ Command error: {e}")
+                self.send(f"⚠️ Command error: {html.escape(str(e))}")
                 traceback.print_exc()
         else:
             self.send(f"Unknown command: {cmd}\nType /help for available commands.")
@@ -344,7 +363,7 @@ class TelegramNotifier:
             f"Regime     : ON\n"
             f"Dynamic TSL: ON\n"
             f"Lot Range  : 0.01-0.05\n"
-            f"Risk Cap   : $40/trade, $100/day\n"
+            f"Risk Cap   : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day\n"
             f"Time       : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.send(msg)
@@ -361,7 +380,8 @@ class TelegramNotifier:
         self.send(f"▶️ <b>BOT RESUMED</b>\nTime: {datetime.now().strftime('%H:%M:%S')}")
 
     def error(self, message: str):
-        self.send(f"⚠️ <b>ERROR</b>\n{message}\n"
+        # Escape: exception text often contains < > & which break parse_mode=HTML
+        self.send(f"⚠️ <b>ERROR</b>\n{html.escape(message)}\n"
                   f"Time: {datetime.now().strftime('%H:%M:%S')}")
 
     def signal_skipped(self, reason: str, source: str = ""):

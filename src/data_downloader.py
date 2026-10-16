@@ -6,6 +6,7 @@ Run this on your laptop with MT5 open and logged in.
 Usage:
     python data_downloader.py           # Download all timeframes
     python data_downloader.py --tf M5   # Download specific timeframe
+    python data_downloader.py --update  # Append only the bars missing since the last download
     python data_downloader.py --verify  # Verify existing data
 """
 
@@ -19,9 +20,7 @@ import pandas as pd
 try:
     import MetaTrader5 as mt5
 except ImportError:
-    print("ERROR: MetaTrader5 package not installed.")
-    print("Run: pip install MetaTrader5")
-    sys.exit(1)
+    mt5 = None  # Checked where it's needed, so other modules can import this file
 
 # Import config — adjust path if running from different directory
 sys.path.insert(0, str(Path(__file__).parent))
@@ -33,6 +32,10 @@ from config import (
 
 def initialize_mt5():
     """Initialize MT5 connection."""
+    if mt5 is None:
+        print("ERROR: MetaTrader5 package not installed.")
+        print("Run: pip install MetaTrader5")
+        sys.exit(1)
     if not mt5.initialize():
         print(f"MT5 initialization failed: {mt5.last_error()}")
         sys.exit(1)
@@ -55,28 +58,20 @@ def initialize_mt5():
     return True
 
 
-def download_timeframe(tf_name: str, chunk_months: int = 6):
+def fetch_range(tf_name: str, start_date: datetime, end_date: datetime,
+                chunk_months: int = 6):
     """
-    Download data for a single timeframe in chunks.
+    Fetch bars for one timeframe between two dates, in chunks.
     MT5 has limits on how much data you can request at once,
     so we chunk by months and concatenate.
 
-    Args:
-        tf_name: Timeframe name (M1, M3, M5, M15)
-        chunk_months: Months per chunk (smaller = more reliable)
+    Returns a DataFrame [datetime, open, high, low, close, volume, spread]
+    (raw MT5 bar times), or None if MT5 returned nothing.
     """
     tf_mt5 = get_mt5_timeframe(tf_name)
     if tf_mt5 is None:
         print(f"Invalid timeframe: {tf_name}")
         return None
-
-    start_date = datetime(DATA_START_YEAR, 1, 1)
-    end_date = datetime.now()
-
-    print(f"\n{'='*60}")
-    print(f"Downloading {MT5_SYMBOL} {tf_name}")
-    print(f"Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-    print(f"{'='*60}")
 
     all_data = []
     current_start = start_date
@@ -103,7 +98,6 @@ def download_timeframe(tf_name: str, chunk_months: int = 6):
         current_start = chunk_end
 
     if not all_data:
-        print(f"ERROR: No data downloaded for {tf_name}")
         return None
 
     # Concatenate and clean
@@ -130,10 +124,30 @@ def download_timeframe(tf_name: str, chunk_months: int = 6):
     # Keep only essential columns
     cols_to_keep = ["datetime", "open", "high", "low", "close", "volume", "spread"]
     cols_available = [c for c in cols_to_keep if c in df.columns]
-    df = df[cols_available]
+    return df[cols_available]
+
+
+def raw_file(tf_name: str) -> Path:
+    return DATA_RAW / f"XAUUSD_{tf_name}.csv"
+
+
+def download_timeframe(tf_name: str, chunk_months: int = 6):
+    """Download the full history (DATA_START_YEAR → now) for one timeframe."""
+    start_date = datetime(DATA_START_YEAR, 1, 1)
+    end_date = datetime.now()
+
+    print(f"\n{'='*60}")
+    print(f"Downloading {MT5_SYMBOL} {tf_name}")
+    print(f"Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"{'='*60}")
+
+    df = fetch_range(tf_name, start_date, end_date, chunk_months)
+    if df is None:
+        print(f"ERROR: No data downloaded for {tf_name}")
+        return None
 
     # Save to CSV
-    output_file = DATA_RAW / f"XAUUSD_{tf_name}.csv"
+    output_file = raw_file(tf_name)
     df.to_csv(output_file, index=False)
 
     print(f"\n  SAVED: {output_file}")
@@ -141,6 +155,46 @@ def download_timeframe(tf_name: str, chunk_months: int = 6):
     print(f"  Date range: {df['datetime'].iloc[0]} to {df['datetime'].iloc[-1]}")
     print(f"  File size: {output_file.stat().st_size / (1024*1024):.1f} MB")
 
+    return df
+
+
+def update_timeframe(tf_name: str) -> pd.DataFrame:
+    """
+    Bring the saved CSV up to date: fetch only the bars after its last bar
+    and append them. Falls back to a full download if there is no CSV yet.
+    MT5 must already be initialized.
+
+    Re-fetches a few days of overlap, because the last saved bar may have
+    been saved while it was still forming, and because copy_rates_range()
+    interprets dates as UTC while bar times are broker time.
+    """
+    if mt5 is None:
+        raise RuntimeError("MetaTrader5 package not installed")
+
+    path = raw_file(tf_name)
+    if not path.exists():
+        print(f"  {tf_name}: no saved data — downloading full history")
+        df = download_timeframe(tf_name)
+        if df is None:
+            raise RuntimeError(f"MT5 returned no {tf_name} data")
+        return df
+
+    old = pd.read_csv(path, parse_dates=["datetime"])
+    last = old["datetime"].max()
+    new = fetch_range(tf_name, last.to_pydatetime() - timedelta(days=3),
+                      datetime.now() + timedelta(days=2), chunk_months=3)
+    if new is None or new.empty:
+        print(f"  {tf_name}: no new bars since {last}")
+        return old
+
+    df = (pd.concat([old, new], ignore_index=True)
+            .drop_duplicates(subset=["datetime"], keep="last")  # newest copy of a bar wins
+            .sort_values("datetime").reset_index(drop=True))
+    added = len(df) - len(old)
+    tmp = path.with_suffix(".csv.tmp")
+    df.to_csv(tmp, index=False)
+    tmp.replace(path)  # never leave a half-written CSV behind
+    print(f"  {tf_name}: +{added:,} bars → {df['datetime'].iloc[-1]} ({len(df):,} total)")
     return df
 
 
@@ -207,6 +261,8 @@ def main():
     parser = argparse.ArgumentParser(description="MIDAS v2 Data Downloader")
     parser.add_argument("--tf", type=str, help="Download specific timeframe (M1/M3/M5/M15)")
     parser.add_argument("--verify", action="store_true", help="Verify existing data only")
+    parser.add_argument("--update", action="store_true",
+                        help="Append bars missing since the last download (M5, M15)")
     args = parser.parse_args()
 
     if args.verify:
@@ -217,7 +273,10 @@ def main():
     initialize_mt5()
 
     try:
-        if args.tf:
+        if args.update:
+            for tf_name in (["M5", "M15"] if not args.tf else [args.tf]):
+                update_timeframe(tf_name)
+        elif args.tf:
             # Download single timeframe
             if args.tf not in MT5_TIMEFRAMES:
                 print(f"Invalid timeframe: {args.tf}. Choose from: {list(MT5_TIMEFRAMES.keys())}")

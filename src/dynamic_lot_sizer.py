@@ -25,6 +25,7 @@ Usage:
     )
 """
 
+import math
 import numpy as np
 from config import (
     MAX_TRADE_RISK, MAX_DAILY_LOSS, XAUUSD_POINT_VALUE, PIP_VALUE,
@@ -88,8 +89,8 @@ DRAWDOWN_ZONES = [
     (-20, 1.0),    # PnL > -$20 → full lot
     (-50, 0.7),    # PnL > -$50 → reduce 30%
     (-80, 0.4),    # PnL > -$80 → reduce 60%
-    (-100, 0.0),   # PnL ≤ -$100 → no trading (daily limit)
-]
+    (-100, 0.0),   # -$80 ≥ PnL > -$100 → no new trades (lot 0)
+]                  # PnL ≤ -$100 → also 0; RiskManager locks the day anyway
 
 # Recent performance (streak-based)
 # Winning streak → cautiously increase, losing streak → reduce
@@ -189,14 +190,23 @@ class DynamicLotSizer:
         raw_lot = base_lot * e_mult * regime_mult * dd_mult * streak_mult
 
         # ── Clamp to range ────────────────────────────────
-        lot = max(LOT_MIN, min(LOT_MAX, raw_lot))
-        lot = round(lot * 100) / 100  # Round to 0.01
+        # dd_mult == 0 means "no trading": return 0 instead of clamping it
+        # back up to the minimum lot (which kept trading in the stop zone)
+        if raw_lot <= 0:
+            lot = 0.0
+        else:
+            lot = max(LOT_MIN, min(LOT_MAX, raw_lot))
+            lot = round(lot * 100) / 100  # Round to 0.01
 
         # ── Risk cap: ensure SL × lot doesn't exceed MAX_TRADE_RISK ──
-        if sl_distance is not None and sl_distance > 0:
+        if lot > 0 and sl_distance is not None and sl_distance > 0:
             max_lot_for_risk = MAX_TRADE_RISK / (XAUUSD_POINT_VALUE * sl_distance)
             lot = min(lot, max_lot_for_risk)
-            lot = max(LOT_MIN, round(lot * 100) / 100)
+            # Floor, not round: rounding up could exceed the cap. Below the
+            # minimum lot the trade can't be sized within risk → 0 (no trade)
+            lot = math.floor(lot * 100 + 1e-9) / 100
+            if lot < LOT_MIN:
+                lot = 0.0
 
         # ── SL/TP adjustments from regime ─────────────────
         sl_mult = REGIME_SL_ADJ.get(regime, 1.0)

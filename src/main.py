@@ -3583,6 +3583,10 @@ Usage:
     python main.py              # Live demo
     python main.py --dry-run    # Signal-only mode
     python main.py --mode live  # Real money (requires CONFIRM)
+
+On startup the bot checks Strategy E's model. If its training data is more
+than E_MODEL_MAX_AGE_DAYS old (config.py), it downloads the missing bars from
+MT5 and retrains first (see retrain_e.py). --skip-retrain / --retrain override.
 """
 
 import argparse
@@ -3603,8 +3607,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE, MT5_SYMBOL,
     SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE,
-    MAX_TRADE_RISK, CONFIDENCE_THRESHOLD, SESSIONS,
+    MAX_TRADE_RISK, MAX_DAILY_LOSS, CONFIDENCE_THRESHOLD, SESSIONS,
+    BROKER_UTC_OFFSET_HOURS,
 )
+import retrain_e
 from feature_engineering import FeatureEngine
 from mt5_executor import MT5Executor
 from risk_manager import RiskManager
@@ -3622,8 +3628,9 @@ from strategies.strategy_d import StrategyD
 from backtester import TradeSignal
 
 # ─── Configuration ────────────────────────────────────────
-M5_HISTORY_BARS = 500
-M15_HISTORY_BARS = 200
+# Long enough for 14-day daily ATR (~17 trading days of M5) and a settled M15 EMA200
+M5_HISTORY_BARS = 5000
+M15_HISTORY_BARS = 1000
 LOOP_INTERVAL_SECONDS = 10
 TSL_CHECK_INTERVAL_SECONDS = 5   # Check TSL more frequently than signal
 MAX_ERRORS = 5
@@ -3639,14 +3646,17 @@ E_SL_ATR_MULT = 1.5
 E_TP_RR_BASE = 1.5
 E_TP_RR_HIGH = 2.5
 E_INDEPENDENT_MIN_CONF = 70
+MIDAS_MAGIC = 202504  # Magic number MT5Executor.open_trade() stamps on our orders
 
 
 class MidasBot:
     """Full-featured MIDAS v2 trading bot."""
 
-    def __init__(self, dry_run: bool = False, mode: str = "demo"):
+    def __init__(self, dry_run: bool = False, mode: str = "demo", retrain: str = "auto"):
         self.dry_run = dry_run
         self.mode = mode
+        self.retrain_mode = retrain  # auto | force | skip
+        self._retrain_checked_on = None  # Date of the last Saturday retrain check
 
         # Core components
         self.mt5 = MT5Executor()
@@ -3670,6 +3680,7 @@ class MidasBot:
         # State
         self.last_m5_time = None
         self.error_count = 0
+        self.error_alerted = False
         self.running = True
         self.paused = False
         self.pause_until = None
@@ -3677,6 +3688,10 @@ class MidasBot:
         # Active trade info (for position monitoring)
         self.active_trade_info = None  # Full trade details for updates
         self.active_trade_open_time = None
+
+        # M15 bar time → ever-increasing counter (see _merge_m15)
+        self._m15_seq = {}
+        self._m15_next_seq = 0
 
     # ═════════════════════════════════════════════════════
     # STARTUP
@@ -3696,10 +3711,18 @@ class MidasBot:
         balance = acc.get("balance", 5000)
         self.risk.update_balance(balance)
 
-        # Load Strategy E
-        print("\n  Loading AI model...")
+        # Broker clock vs. what the session features assume
+        self._check_broker_utc_offset()
+
+        # Bring Strategy E up to date with the market data since it was trained
+        if self.retrain_mode != "skip":
+            self._refresh_strategy_e(force=self.retrain_mode == "force")
         if not self.live_e.loaded:
             print("  WARNING: Strategy E unavailable. Running A-D only.")
+            self.notifier.error("Strategy E model unavailable — trading with A-D only")
+
+        # Pick up a position left open by a previous run
+        self._reconcile_open_position()
 
         # Register Telegram commands
         self._register_commands()
@@ -3725,6 +3748,92 @@ class MidasBot:
         finally:
             self._shutdown()
 
+    def _reconcile_open_position(self):
+        """Sync risk/TSL state with what is actually open on MT5.
+
+        Saved state is dropped on a new day, and TSL/trade info is never
+        saved, so after a restart the bot could forget a running trade and
+        open a second one, or stop trailing the stop.
+        """
+        positions = self.mt5.get_open_positions()
+        if positions is None:
+            print("  WARNING: could not read MT5 positions at startup")
+            return
+        ours = [p for p in positions if p["magic"] == MIDAS_MAGIC]
+        if not ours:
+            return  # A stale saved ticket is cleared by _monitor_and_trail()
+
+        pos = next((p for p in ours if p["ticket"] == self.risk.open_trade_ticket), ours[0])
+        if self.risk.open_trade_ticket != pos["ticket"]:
+            self.risk.adopt_open_trade(pos["ticket"])
+
+        self.active_trade_open_time = None  # pos["time"] is broker server time, not comparable with now()
+        self.active_trade_info = {
+            "ticket": pos["ticket"], "direction": pos["direction"],
+            "entry_price": pos["entry_price"], "sl_price": pos["sl"],
+            "tp_price": pos["tp"], "lot_size": pos["volume"],
+            "source": "resumed", "regime": "", "session": "",
+        }
+        if pos["sl"] > 0 and pos["tp"] > 0:
+            self.tsl.start_tracking({
+                "ticket": pos["ticket"], "direction": pos["direction"],
+                "entry_price": pos["entry_price"], "sl_price": pos["sl"],
+                "tp_price": pos["tp"], "lot_size": pos["volume"],
+            })
+        print(f"  Resumed open position {pos['ticket']} "
+              f"({pos['direction'].upper()} {pos['volume']} @ {pos['entry_price']:.2f})")
+
+    def _refresh_strategy_e(self, force: bool = False):
+        """Retrain Strategy E if its training data is stale (bridges the gap
+        between the last training run and today), then load the result."""
+        print("\n  Checking Strategy E model...")
+        status = retrain_e.model_status()
+        if status["state"] == "fresh" and not force:
+            print(f"  Strategy E model is up to date ({status['reason']})")
+            return
+
+        self.notifier.send(f"🔄 Strategy E: {status['state']} ({status['reason']}). "
+                           f"Syncing data and retraining — this takes a few minutes.")
+        result = retrain_e.ensure_fresh_model(force=force, sync=True)
+        if result["action"] == "retrained":
+            self.live_e.reload()
+            latest = result["windows"][-1]
+            self.notifier.send(
+                f"✅ Strategy E retrained through {result['meta']['trained_through'][:10]}\n"
+                f"Latest unseen {latest['test_start']}→{latest['test_end']}: "
+                f"AUC {latest['auc']:.3f}, accuracy {latest['accuracy']:.1%}")
+        elif result["action"] == "rejected":
+            self.notifier.error(f"Strategy E retrain rejected, keeping current model: {result['reason']}")
+        elif result["action"] == "failed":
+            self.notifier.error(f"Strategy E retrain failed, keeping current model: {result['error']}")
+
+    def _maybe_weekend_retrain(self):
+        """For a bot left running for weeks: on Saturday (market closed), with
+        no open trade, retrain if the model has gone stale. Checked once a day."""
+        now = datetime.now(UTC)
+        if (self.retrain_mode == "skip" or now.weekday() != 5
+                or self._retrain_checked_on == now.date()
+                or self.risk.open_trade_ticket is not None):
+            return
+        self._retrain_checked_on = now.date()
+        if retrain_e.model_status()["state"] != "fresh":
+            self._refresh_strategy_e()
+
+    def _check_broker_utc_offset(self):
+        """Warn if the broker's clock isn't what the session features assume."""
+        offset = self.mt5.get_broker_utc_offset()
+        if offset is None:
+            print("  Broker UTC offset: unknown (no fresh tick — market closed?)")
+            return
+        print(f"  Broker server time: UTC{offset:+d}")
+        if offset != BROKER_UTC_OFFSET_HOURS:
+            msg = (f"Broker server time is UTC{offset:+d}, but session-range features "
+                   f"(Strategy C's Asian range) assume UTC{BROKER_UTC_OFFSET_HOURS:+d}: "
+                   f"that window is {abs(offset - BROKER_UTC_OFFSET_HOURS)}h off "
+                   f"(usually a DST change).")
+            print(f"  WARNING: {msg}")
+            self.notifier.error(msg)
+
     def _print_banner(self):
         print("=" * 60)
         print("  MIDAS v2 — XAUUSD AI Trading Bot")
@@ -3735,7 +3844,7 @@ class MidasBot:
         print(f"  Regime       : ON")
         print(f"  Dynamic TSL  : ON")
         print(f"  Dynamic Lots : 0.01-0.05")
-        print(f"  Risk Cap     : $40/trade, $100/day")
+        print(f"  Risk Cap     : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day")
         print(f"  Session Lim  : 2 per session")
         print(f"  Cooldown     : 10 min")
 
@@ -3747,6 +3856,9 @@ class MidasBot:
         """Main event loop."""
         while self.running:
             try:
+                # ── Keep Strategy E fresh on long runs ────
+                self._maybe_weekend_retrain()
+
                 # ── Pause check ───────────────────────────
                 if self.paused:
                     if self.pause_until and datetime.now() >= self.pause_until:
@@ -3785,6 +3897,7 @@ class MidasBot:
                 self.last_m5_time = bar_time
                 self._process_bar()
                 self.error_count = 0
+                self.error_alerted = False
 
             except KeyboardInterrupt:
                 raise
@@ -3792,6 +3905,12 @@ class MidasBot:
                 self.error_count += 1
                 print(f"  ⚠️ Error ({self.error_count}): {e}")
                 if self.error_count >= MAX_ERRORS:
+                    # Without this, a repeating error silently stops all trading.
+                    # Alert once per failure streak, not on every reconnect.
+                    if not self.error_alerted:
+                        self.error_alerted = True
+                        self.notifier.error(f"{MAX_ERRORS} errors in a row, reconnecting MT5. "
+                                            f"Last: {type(e).__name__}: {str(e)[:200]}")
                     print("  Reconnecting MT5...")
                     self.mt5.reconnect()
                     self.error_count = 0
@@ -3817,10 +3936,11 @@ class MidasBot:
             return
 
         # Build features
-        df = self._build_features()
-        if df is None or len(df) < 100:
+        features = self._build_features()
+        if features is None or len(features[0]) < 100:
             print(f"  Skip: insufficient data")
             return
+        df, df_e = features
 
         idx = len(df) - 1
         row = df.iloc[idx]
@@ -3832,7 +3952,7 @@ class MidasBot:
         ad_signals = self._run_strategies_parallel(df, idx)
 
         # ── Get Strategy E prediction ─────────────────────
-        e_prob = self._get_e_prediction(df, idx)
+        e_prob = self._get_e_prediction(df_e, row["datetime"])
 
         # ── Decision ──────────────────────────────────────
         signal = self._make_decision(ad_signals, e_prob, adj, current_regime, row)
@@ -3870,13 +3990,15 @@ class MidasBot:
 
         return signals
 
-    def _get_e_prediction(self, df, idx) -> Optional[float]:
-        """Get Strategy E's prediction on debiased data."""
-        if not self.live_e.loaded:
+    def _get_e_prediction(self, df_e, bar_time) -> Optional[float]:
+        """Get Strategy E's prediction for the bar A-D are looking at."""
+        if not self.live_e.loaded or df_e is None or df_e.empty:
             return None
         try:
-            df_debiased = self.live_e.debias_dataframe(df)
-            return self.live_e.predict(df_debiased, idx)
+            if df_e["datetime"].iloc[-1] != bar_time:
+                print(f"  Strategy E: bar mismatch ({df_e['datetime'].iloc[-1]} vs {bar_time})")
+                return None
+            return self.live_e.predict(df_e, len(df_e) - 1)
         except Exception as e:
             print(f"  Strategy E error: {e}")
             return None
@@ -3948,6 +4070,9 @@ class MidasBot:
             n_strategies=n_agree, e_prob=e_prob, regime=regime,
             daily_pnl=self.risk.daily_pnl, atr=atr, sl_distance=sl_distance,
         )
+        if lot_result["lot_size"] <= 0:
+            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.daily_pnl:+.2f})")
+            return None
         best_signal.sub_conditions["dynamic_lot"] = lot_result["lot_size"]
         best_signal.sub_conditions["source"] = sources
         best_signal.sub_conditions["regime"] = regime
@@ -3993,6 +4118,9 @@ class MidasBot:
             n_strategies=0, e_prob=e_prob, regime=regime,
             daily_pnl=self.risk.daily_pnl, atr=atr, sl_distance=sl_dist,
         )
+        if lot_result["lot_size"] <= 0:
+            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.daily_pnl:+.2f})")
+            return None
 
         return TradeSignal(
             datetime=row["datetime"], direction=direction,
@@ -4091,6 +4219,8 @@ class MidasBot:
 
         # Check if position still open
         positions = self.mt5.get_open_positions()
+        if positions is None:
+            return  # MT5 call failed — don't mistake that for "position closed"
         our_tickets = [p["ticket"] for p in positions]
 
         if self.risk.open_trade_ticket not in our_tickets:
@@ -4113,7 +4243,12 @@ class MidasBot:
                 success = self.mt5.modify_sl_tp(
                     self.risk.open_trade_ticket, new_sl=new_sl
                 )
-                if success:
+                if not success:
+                    # Broker kept the old SL; undo so the move is retried
+                    self.tsl.revert_last_update()
+                else:
+                    if self.active_trade_info:
+                        self.active_trade_info["current_sl"] = new_sl
                     print(f"  📐 TSL: {old_sl:.2f} → {new_sl:.2f} | {tsl_result['reason']}")
                     self.logger.log_tsl_change(
                         self.risk.open_trade_ticket, old_sl, new_sl, tsl_result["reason"]
@@ -4135,21 +4270,29 @@ class MidasBot:
     def _handle_closed(self):
         """Handle a position closed by broker (SL/TP/TSL hit)."""
         ticket = self.risk.open_trade_ticket
+        balance_before = self.risk.current_balance
 
+        pnl, exit_price, reason = None, 0, "unknown"
         try:
             import MetaTrader5 as mt5
-            deals = mt5.history_deals_get(position=ticket)
-            if deals and len(deals) >= 2:
-                close_deal = deals[-1]
-                pnl = close_deal.profit + close_deal.commission + close_deal.swap
-                exit_price = close_deal.price
-                reason = "tp_hit" if pnl > 0 else "sl_hit"
-            else:
-                pnl, exit_price, reason = 0, 0, "unknown"
-        except Exception:
-            pnl, exit_price, reason = 0, 0, "unknown"
+            # The closing deal can take a moment to appear in history
+            for _ in range(3):
+                deals = mt5.history_deals_get(position=ticket)
+                if deals and len(deals) >= 2:
+                    # Sum every deal: entry commission + partial closes + final close
+                    pnl = sum(d.profit + d.commission + d.swap for d in deals)
+                    exit_price = deals[-1].price
+                    reason = "tp_hit" if pnl > 0 else "sl_hit"
+                    break
+                time.sleep(1)
+        except Exception as e:
+            print(f"  WARNING: deal history lookup failed: {e}")
 
-        balance = self.mt5.get_balance()
+        balance = self.mt5.get_balance() or balance_before  # 0.0 means MT5 call failed
+        if pnl is None:
+            # Never record 0: that would hide a loss from the daily loss limit
+            pnl = balance - balance_before
+            print(f"  WARNING: no deal history for {ticket}; PnL from balance change")
         duration = 0
         if self.active_trade_open_time:
             duration = int((datetime.now() - self.active_trade_open_time).total_seconds() / 60)
@@ -4176,13 +4319,31 @@ class MidasBot:
     # FEATURE COMPUTATION
     # ═════════════════════════════════════════════════════
 
-    def _build_features(self) -> Optional[pd.DataFrame]:
-        """Fetch live data and compute all features."""
-        df_m5 = self.mt5.fetch_bars("M5", M5_HISTORY_BARS)
-        df_m15 = self.mt5.fetch_bars("M15", M15_HISTORY_BARS)
+    def _build_features(self) -> Optional[Tuple[pd.DataFrame, Optional[pd.DataFrame]]]:
+        """Fetch live data and compute features.
+
+        Returns (df, df_e): df is the A-D frame (built exactly like the A-D
+        backtests); df_e is Strategy E's frame, built by the same function as
+        its training data. None if there isn't enough data.
+        """
+        df_m5 = self.mt5.fetch_bars("M5", M5_HISTORY_BARS + 1)
+        df_m15 = self.mt5.fetch_bars("M15", M15_HISTORY_BARS + 1)
+        # The last row of each is the bar that is still forming (opened seconds
+        # ago for M5). Signals must only use closed bars, as in the backtest.
+        if df_m5 is not None:
+            df_m5 = df_m5.iloc[:-1].copy()
+        if df_m15 is not None:
+            df_m15 = df_m15.iloc[:-1].copy()
 
         if df_m5 is None or len(df_m5) < 100 or df_m15 is None or len(df_m15) < 50:
             return None
+
+        df_e = None
+        if self.live_e.loaded:
+            try:
+                df_e = self.live_e.build_features(df_m5.copy(), df_m15.copy())
+            except Exception as e:
+                print(f"  Strategy E feature error: {e}")
 
         df_m15 = self.engine.compute_shared(df_m15, "M15")
         df_m15 = self.engine.compute_fvg(df_m15)
@@ -4192,7 +4353,20 @@ class MidasBot:
         df_m5 = self.engine.compute_trend(df_m5)
         df_m5 = self.engine.compute_session_range(df_m5)
 
-        return self._merge_m15(df_m5, df_m15)
+        return self._merge_m15(df_m5, df_m15), df_e
+
+    def _m15_sequence(self, times: pd.Series) -> List[int]:
+        """Give each M15 bar time a stable, ever-increasing number."""
+        seq = []
+        for t in times:  # sorted ascending, so new bars get the next numbers
+            if t not in self._m15_seq:
+                self._m15_seq[t] = self._m15_next_seq
+                self._m15_next_seq += 1
+            seq.append(self._m15_seq[t])
+        if len(self._m15_seq) > 4 * M15_HISTORY_BARS:
+            keep = set(times)
+            self._m15_seq = {t: n for t, n in self._m15_seq.items() if t in keep}
+        return seq
 
     def _merge_m15(self, df_m5, df_m15):
         """Merge M15 features into M5 (same as run_combined_abcd.py)."""
@@ -4215,10 +4389,13 @@ class MidasBot:
 
         m15_cols = list(dict.fromkeys(m15_cols))
         sub = df_m15[m15_cols].copy()
-        orig_idx = sub.index.values
         rename = {c: f"m15_{c}" for c in sub.columns if c != "datetime"}
         sub = sub.rename(columns=rename).rename(columns={"datetime": "m15_datetime_key"})
-        sub["m15_idx"] = orig_idx
+        # Strategies A/B skip any M15 bar whose index isn't higher than the last
+        # one they saw. The row position inside this rolling window is always the
+        # same for the newest bar, so use a counter that keeps increasing across
+        # fetches (and, like the backtest index, counts bars, not clock time).
+        sub["m15_idx"] = self._m15_sequence(sub["m15_datetime_key"])
 
         merged = pd.merge_asof(df_m5, sub, left_on="datetime",
                                 right_on="m15_datetime_key", direction="backward")
@@ -4332,6 +4509,8 @@ class MidasBot:
 
     def _cmd_positions(self) -> str:
         positions = self.mt5.get_open_positions()
+        if positions is None:
+            return "⚠️ Could not read positions from MT5."
         if not positions:
             return "No open positions."
         lines = ["<b>Open Positions:</b>"]
@@ -4381,6 +4560,11 @@ def main():
                         help="Generate signals without executing trades")
     parser.add_argument("--mode", choices=["demo", "live"], default="demo",
                         help="Account mode (default: demo)")
+    retrain = parser.add_mutually_exclusive_group()
+    retrain.add_argument("--retrain", action="store_true",
+                         help="Retrain Strategy E at startup even if it is up to date")
+    retrain.add_argument("--skip-retrain", action="store_true",
+                         help="Don't check/retrain Strategy E (use the saved model as is)")
     args = parser.parse_args()
 
     if args.mode == "live" and not args.dry_run:
@@ -4389,7 +4573,8 @@ def main():
             print("  Aborted.")
             return
 
-    bot = MidasBot(dry_run=args.dry_run, mode=args.mode)
+    retrain_mode = "force" if args.retrain else "skip" if args.skip_retrain else "auto"
+    bot = MidasBot(dry_run=args.dry_run, mode=args.mode, retrain=retrain_mode)
     bot.start()
 
 
