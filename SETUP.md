@@ -114,6 +114,12 @@ No files involved. This is done entirely in the terminal.
    `XAUUSD.r`, `XAUUSDm`, `XAUUSD_i`. If yours is not plain `XAUUSD`, update
    `MT5_SYMBOL` in `src/config.py`.
 7. Leave the terminal **running and logged in**. The bot cannot start it.
+8. **Nothing to edit for account size.** Risk limits are percentages that the
+   bot sizes from this account at startup and every broker midnight (on $500:
+   $7.50 per trade, $20/day, below the hard 5% = $25). The fixed max-loss floor uses
+   the account's deposit history; set `ACCOUNT_BALANCE` in `src/config.py` only
+   if that history is wrong. Check the startup lines `Initial balance ...` and
+   `Today's base ...`.
 
 **Verify:**
 
@@ -261,7 +267,8 @@ Confirm, in order:
 - [ ] `MT5 connected` with the **new** account number and balance
 - [ ] `Strategy E model is up to date (...)` — or a retrain that ends in `✅ Strategy E retrained`
 - [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v2, data through <recent date>)`
-- [ ] `Broker server time: UTC+2` (a `UTC+3` warning means the broker is on DST — see README §8)
+- [ ] `Broker server time: UTC+3` in summer / `UTC+2` in winter, with no warning
+      after it (a warning means the broker's clock rule differs — README §8)
 - [ ] `Telegram command listener started` (not `Telegram: disabled`)
 - [ ] A "bot started" message arrives on your phone
 - [ ] A new `[HH:MM] price | session | DayPnL` line every ~5 minutes
@@ -296,10 +303,10 @@ python src\main.py --mode live
 Prompts for a typed `CONFIRM`. Before you type it:
 
 - [ ] The MT5 terminal is logged into the **intended** account
-- [ ] `ACCOUNT_BALANCE` and the limits in `config.py` match that account
+- [ ] Startup's `Initial balance ...` and `Today's base ...` lines show that
+      account's numbers (and the per-trade / daily limits you expect)
 - [ ] Telegram works — you need `/stop` reachable from your phone
-- [ ] You have read README §7; **Strategy E's live predictions are degraded
-      until gotcha 3 is fixed**
+- [ ] You have read README §7
 
 ---
 

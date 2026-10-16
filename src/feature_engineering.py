@@ -1068,6 +1068,8 @@ Usage:
 import numpy as np
 import pandas as pd
 
+from broker_time import to_utc
+
 from config import (
     EMA_PERIODS, ATR_PERIOD, RSI_PERIOD, ADX_PERIOD,
     SWING_LOOKBACK, SESSIONS, PIP_VALUE
@@ -1452,10 +1454,14 @@ class FeatureEngine:
         Phase 3: Session Range Breakout features.
         Computes Asian session range per trading day and marks breakouts.
 
-        Broker timezone: UTC+2
-        Asian range hours: 02:00-08:00 broker time (= 00:00-06:00 UTC)
-        Breakout allowed: 08:00-18:00 broker time (= 06:00-16:00 UTC)
-        Early breakout: before 14:00 broker time (= before 12:00 UTC)
+        Windows are in real UTC. Bar times are broker time, whose UTC offset
+        changes with DST (UTC+2 winter / UTC+3 summer), so each bar is
+        converted with broker_time.to_utc() instead of assuming +2.
+        Asian range hours: 00:00-06:00 UTC
+        Breakout allowed: 06:00-16:00 UTC
+        Early breakout: before 12:00 UTC
+        The "trading day" stays the broker date (daily candles), which always
+        contains the whole Asian window.
 
         Adds columns:
           - asian_range_high, asian_range_low, asian_range_width
@@ -1470,15 +1476,15 @@ class FeatureEngine:
         df = df.copy()
         atr_col = f"atr_{ATR_PERIOD}"
 
-        # Broker time hours (data timestamps are UTC+2)
-        ASIAN_START = 2   # 02:00 broker = 00:00 UTC
-        ASIAN_END = 8     # 08:00 broker = 06:00 UTC
-        BREAKOUT_START = 8   # 08:00 broker
-        BREAKOUT_END = 18    # 18:00 broker = 16:00 UTC
-        EARLY_CUTOFF = 14    # 14:00 broker = 12:00 UTC
+        # UTC hours
+        ASIAN_START = 0      # 00:00 UTC
+        ASIAN_END = 6        # 06:00 UTC
+        BREAKOUT_START = 6   # 06:00 UTC
+        BREAKOUT_END = 16    # 16:00 UTC
+        EARLY_CUTOFF = 12    # 12:00 UTC
 
-        hour = df["datetime"].dt.hour
-        date = df["datetime"].dt.date
+        hour = to_utc(df["datetime"]).dt.hour
+        date = df["datetime"].dt.date  # broker trading day
 
         # ── Compute Asian range per trading day ──────────
         # Asian session mask
@@ -1975,12 +1981,11 @@ class FeatureEngine:
     def _add_sessions(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Label each candle with its trading session.
-        Uses UTC hours from datetime column.
-        
-        NOTE: If your MT5 broker uses a different timezone (e.g., UTC+2),
-        adjust the datetime before calling this, or modify SESSIONS in config.
+        SESSIONS are UTC hours; bar times are broker time, so convert first
+        (DST-aware, broker_time.py). This matches RiskManager.get_session(),
+        which the live bot uses for session limits.
         """
-        hour = df["datetime"].dt.hour
+        hour = to_utc(df["datetime"]).dt.hour
 
         # Default to "off"
         df["session"] = "off"

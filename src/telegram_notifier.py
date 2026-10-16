@@ -352,7 +352,8 @@ class TelegramNotifier:
         )
         self.send(msg)
 
-    def bot_started(self, balance: float, mode: str = "DEMO"):
+    def bot_started(self, balance: float, mode: str = "DEMO",
+                    trade_risk: float = MAX_TRADE_RISK, daily_loss: float = MAX_DAILY_LOSS):
         """Bot startup alert."""
         msg = (
             f"🚀 <b>MIDAS v2 STARTED</b>\n"
@@ -363,7 +364,7 @@ class TelegramNotifier:
             f"Regime     : ON\n"
             f"Dynamic TSL: ON\n"
             f"Lot Range  : 0.01-0.05\n"
-            f"Risk Cap   : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day\n"
+            f"Risk Cap   : ${trade_risk:.2f}/trade, ${daily_loss:.2f}/day\n"
             f"Time       : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.send(msg)

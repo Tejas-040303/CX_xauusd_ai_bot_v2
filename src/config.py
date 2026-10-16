@@ -37,17 +37,45 @@ MT5_TIMEFRAMES = {
 DATA_START_YEAR = 2021
 DATA_END_YEAR = 2026  # Up to current
 
-# ─── The5ers Rules ───────────────────────────────────────
-ACCOUNT_BALANCE = 500
-PROFIT_TARGET =  ACCOUNT_BALANCE * 1.10          # +10%
-MAX_LOSS_LEVEL =  ACCOUNT_BALANCE * 0.90         # -10% total drawdown
-DAILY_LOSS_LIMIT_5ERS =  ACCOUNT_BALANCE * 0.05   # -5% per day ($250)
+# ─── Account Rules (modeled on The5ers' prop-firm rules) ─
+# We don't trade a The5ers account; their rules are kept as the hard limits.
+# All risk is percentages. The live bot turns them into dollars from the MT5
+# account itself (RiskManager), so nothing here needs editing when the
+# account size changes:
+#   - initial balance  = the account's deposits in MT5 history (or
+#                        ACCOUNT_BALANCE if you set it) → fixed max-loss floor
+#   - day's base       = higher of balance/equity at broker midnight
+#                        → daily stop and per-trade risk, recomputed daily
+ACCOUNT_BALANCE = None          # None = read from MT5; set a number to override
+THE5ERS_DAILY_LOSS_PCT = 0.05   # Hard daily loss limit, from the day's base
+THE5ERS_MAX_LOSS_PCT = 0.10     # Hard max loss, from the initial balance (fixed floor)
+PROFIT_TARGET_PCT = 0.10
 MIN_PROFITABLE_DAYS = 3
 MAX_INACTIVE_DAYS = 30
 
 # ─── Risk Settings (Our Safety Buffer) ──────────────────
-MAX_DAILY_LOSS = 100          # Below The5ers $250 limit
-MAX_TRADE_RISK =  ACCOUNT_BALANCE * 0.10           # Per trade max loss in USD ($50)
+# Fractions of the day's base. Our daily stop must trip before The5ers'.
+# Per-trade risk is the loss if the SL is hit; validate_trade_risk() also
+# refuses any trade whose SL could push the day past the daily stop.
+# Gold's minimum lot (0.01) loses $1 per $1 move, so with a typical $3-7 stop
+# the smallest trade already risks ~$3-7: on small accounts, trades that can't
+# fit the per-trade cap even at 0.01 lot are skipped ("even at min lot").
+MAX_DAILY_LOSS_PCT = 0.04    # Stop for the day at -4%   ($20 on $500)
+MAX_TRADE_RISK_PCT = 0.015   # Max loss per trade 1.5%   ($7.50 on $500)
+
+if not (0 < MAX_TRADE_RISK_PCT <= MAX_DAILY_LOSS_PCT < THE5ERS_DAILY_LOSS_PCT):
+    raise ValueError(
+        f"Risk settings out of order: need 0 < per-trade ({MAX_TRADE_RISK_PCT:.1%}) <= "
+        f"our daily stop ({MAX_DAILY_LOSS_PCT:.1%}) < hard daily limit ({THE5ERS_DAILY_LOSS_PCT:.1%})")
+
+# Dollar values for backtests and legacy modules (fixed capital). The live
+# bot does NOT use these — it computes them from the MT5 account each day.
+BACKTEST_INITIAL_CAPITAL = ACCOUNT_BALANCE or 500
+PROFIT_TARGET = BACKTEST_INITIAL_CAPITAL * (1 + PROFIT_TARGET_PCT)
+MAX_LOSS_LEVEL = BACKTEST_INITIAL_CAPITAL * (1 - THE5ERS_MAX_LOSS_PCT)
+DAILY_LOSS_LIMIT_5ERS = BACKTEST_INITIAL_CAPITAL * THE5ERS_DAILY_LOSS_PCT
+MAX_DAILY_LOSS = round(BACKTEST_INITIAL_CAPITAL * MAX_DAILY_LOSS_PCT, 2)
+MAX_TRADE_RISK = round(BACKTEST_INITIAL_CAPITAL * MAX_TRADE_RISK_PCT, 2)
 LOT_SIZE_MIN = 0.01
 LOT_SIZE_MAX = 0.05
 LOT_SIZE_SINGLE = 0.01       # 1 strategy triggers
@@ -56,7 +84,7 @@ COOLDOWN_SECONDS = 300        # 05 min between trades
 SPREAD_SIMULATION_PIPS = 2.5  # Simulated slippage for backtests
 
 # ─── Session Definitions (UTC) ───────────────────────────
-# Broker is UTC+2 (MetaQuotes), adjust if needed
+# Real UTC hours. Bar times are converted from broker time (broker_time.py)
 SESSIONS = {
     "asian":  {"start": 0, "end": 6},     # 00:00 - 06:00 UTC
     "london": {"start": 6, "end": 14},    # 06:00 - 14:00 UTC
@@ -97,8 +125,7 @@ SWING_LOOKBACK = 5  # Candles on each side to confirm swing high/low
 BACKTEST_TRAIN_END = "2024-06-30"     # Train: 2021-01-01 to 2024-06-30
 BACKTEST_FORWARD_START = "2024-07-01"  # Forward: 2024-07-01 to 2026-present
 
-# Starting capital for backtest
-BACKTEST_INITIAL_CAPITAL = 5000
+# Starting capital for backtest: BACKTEST_INITIAL_CAPITAL (risk section above)
 
 # Point value for XAUUSD (1 lot = 100 oz, $1 move = $100 per lot)
 XAUUSD_POINT_VALUE = 100  # $ per lot per $1 price move
@@ -117,10 +144,13 @@ E_TRAIN_YEARS = 4          # Rolling training window ending at the latest bar
 E_TEST_MONTHS = 6          # Out-of-sample block per walk-forward check
 E_MIN_TEST_AUC = 0.52      # New model must beat this on the latest unseen months
 
-# Hour offset between broker server time and UTC that the session-range
-# features assume (feature_engineering.compute_session_range). main.py warns
-# at startup if the live broker offset differs.
-BROKER_UTC_OFFSET_HOURS = 2
+# Broker server clock (MT5 bar times are server time, not UTC):
+# server time = time in BROKER_TIME_ZONE + BROKER_TIME_SHIFT_HOURS.
+# Default is the common "New York close" server: UTC+2 in winter, UTC+3 during
+# US daylight saving. For an EET server (EU DST dates) use "Europe/Athens", 0.
+# main.py checks this against the live server clock at startup.
+BROKER_TIME_ZONE = "America/New_York"
+BROKER_TIME_SHIFT_HOURS = 7
 
 # ─── Telegram Settings ───────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")

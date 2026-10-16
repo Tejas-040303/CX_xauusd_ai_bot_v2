@@ -40,7 +40,7 @@ import pandas as pd
 from config import ATR_PERIOD, SWING_LOOKBACK, DATA_PROCESSED
 from feature_engineering import FeatureEngine
 
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3  # v3: session labels / Asian range in real UTC (DST-aware)
 
 # ─── Labels ──────────────────────────────────────────────
 LABEL_HORIZON_BARS = 12          # 12 M5 bars = 1 hour lookahead

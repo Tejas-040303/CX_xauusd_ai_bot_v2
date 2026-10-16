@@ -13,6 +13,9 @@ MetaTrader5>=5.0.45
 
 # ─── Core numerics ───────────────────────────────────────
 pandas>=2.0
+# Time-zone database: broker_time.py converts broker server time to UTC
+# (Windows has no system tz database)
+tzdata>=2024.1
 numpy>=1.24
 
 # ─── Parquet I/O (strategy_e_* pipeline reads/writes .parquet) ──

@@ -13,7 +13,8 @@ Also adjusts SL/TP:
   - TP extended in trending regimes with high conviction
 
 Lot range: 0.01 (minimum) → 0.05 (maximum)
-Risk cap: MAX_TRADE_RISK ($40) always enforced regardless of lot
+Risk cap: per-trade risk always enforced regardless of lot (live passes the day's
+limits from RiskManager; backtests fall back to config's reference values)
 
 Usage:
     from dynamic_lot_sizer import DynamicLotSizer
@@ -84,13 +85,14 @@ REGIME_TP_ADJ = {
 }
 
 # Drawdown proximity multiplier
-# As daily PnL approaches -MAX_DAILY_LOSS, reduce lot
+# As daily PnL approaches the daily stop, reduce lot. Thresholds are fractions
+# of the day's stop, so they move with the account (stop $20 → -$4/-$10/-$16/-$20).
 DRAWDOWN_ZONES = [
-    (-20, 1.0),    # PnL > -$20 → full lot
-    (-50, 0.7),    # PnL > -$50 → reduce 30%
-    (-80, 0.4),    # PnL > -$80 → reduce 60%
-    (-100, 0.0),   # -$80 ≥ PnL > -$100 → no new trades (lot 0)
-]                  # PnL ≤ -$100 → also 0; RiskManager locks the day anyway
+    (-0.2, 1.0),  # PnL > -20% of daily stop → full lot
+    (-0.5, 0.7),  # PnL > -50%               → reduce 30%
+    (-0.8, 0.4),  # PnL > -80%               → reduce 60%
+    (-1.0, 0.0),  # -80% ≥ PnL > -100%       → no new trades (lot 0)
+]                 # PnL ≤ -100% → also 0; RiskManager locks the day anyway
 
 # Recent performance (streak-based)
 # Winning streak → cautiously increase, losing streak → reduce
@@ -127,6 +129,8 @@ class DynamicLotSizer:
         daily_pnl: float = 0.0,
         atr: float = 2.0,
         sl_distance: float = None,
+        max_trade_risk: float = None,
+        max_daily_loss: float = None,
     ) -> dict:
         """
         Compute dynamic lot size and SL/TP adjustments.
@@ -138,6 +142,8 @@ class DynamicLotSizer:
             daily_pnl: Today's cumulative PnL
             atr: Current ATR
             sl_distance: Strategy's SL distance in price (for risk capping)
+            max_trade_risk: Today's per-trade $ cap (default: config reference)
+            max_daily_loss: Today's daily $ stop (default: config reference)
 
         Returns:
             dict with:
@@ -176,8 +182,10 @@ class DynamicLotSizer:
 
         # ── Drawdown proximity ────────────────────────────
         dd_mult = 1.0
-        for threshold, mult in DRAWDOWN_ZONES:
-            if daily_pnl > threshold:
+        max_trade_risk = MAX_TRADE_RISK if max_trade_risk is None else max_trade_risk
+        max_daily_loss = MAX_DAILY_LOSS if max_daily_loss is None else max_daily_loss
+        for frac, mult in DRAWDOWN_ZONES:
+            if daily_pnl > frac * max_daily_loss:
                 dd_mult = mult
                 break
         else:
@@ -198,9 +206,9 @@ class DynamicLotSizer:
             lot = max(LOT_MIN, min(LOT_MAX, raw_lot))
             lot = round(lot * 100) / 100  # Round to 0.01
 
-        # ── Risk cap: ensure SL × lot doesn't exceed MAX_TRADE_RISK ──
+        # ── Risk cap: ensure SL × lot doesn't exceed the per-trade risk ──
         if lot > 0 and sl_distance is not None and sl_distance > 0:
-            max_lot_for_risk = MAX_TRADE_RISK / (XAUUSD_POINT_VALUE * sl_distance)
+            max_lot_for_risk = max_trade_risk / (XAUUSD_POINT_VALUE * sl_distance)
             lot = min(lot, max_lot_for_risk)
             # Floor, not round: rounding up could exceed the cap. Below the
             # minimum lot the trade can't be sized within risk → 0 (no trade)
