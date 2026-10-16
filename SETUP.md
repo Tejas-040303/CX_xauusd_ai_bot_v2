@@ -114,11 +114,12 @@ No files involved. This is done entirely in the terminal.
    `XAUUSD.r`, `XAUUSDm`, `XAUUSD_i`. If yours is not plain `XAUUSD`, update
    `MT5_SYMBOL` in `src/config.py`.
 7. Leave the terminal **running and logged in**. The bot cannot start it.
-8. **Set `ACCOUNT_BALANCE` in `src/config.py` to this account's starting
-   balance.** Every risk limit is a percentage of it (on $500: $7.50 per trade,
-   $20/day, below The5ers' $25 daily limit). The bot warns at startup if MT5's
-   balance is more than 25% away from it, and resets the day's risk counters
-   when it sees a different MT5 account than last time.
+8. **Nothing to edit for account size.** Risk limits are percentages that the
+   bot sizes from this account at startup and every broker midnight (on $500:
+   $7.50 per trade, $20/day, below The5ers' $25). The fixed max-loss floor uses
+   the account's deposit history; set `ACCOUNT_BALANCE` in `src/config.py` only
+   if that history is wrong. Check the startup lines `Initial balance ...` and
+   `Today's base ...`.
 
 **Verify:**
 
@@ -301,10 +302,10 @@ python src\main.py --mode live
 Prompts for a typed `CONFIRM`. Before you type it:
 
 - [ ] The MT5 terminal is logged into the **intended** account
-- [ ] `ACCOUNT_BALANCE` and the limits in `config.py` match that account
+- [ ] Startup's `Initial balance ...` and `Today's base ...` lines show that
+      account's numbers (and the per-trade / daily limits you expect)
 - [ ] Telegram works — you need `/stop` reachable from your phone
-- [ ] You have read README §7; **Strategy E's live predictions are degraded
-      until gotcha 3 is fixed**
+- [ ] You have read README §7
 
 ---
 

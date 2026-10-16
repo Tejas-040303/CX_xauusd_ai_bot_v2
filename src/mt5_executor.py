@@ -99,6 +99,18 @@ class MT5Executor:
         acc = mt5.account_info()
         return acc.balance if acc else 0.0
 
+    def get_initial_balance(self) -> Optional[float]:
+        """The account's starting balance: net deposits/withdrawals in its deal
+        history (MT5 'balance' deals). Prop-firm max-loss floors are measured
+        from this. None if the history has no balance deals or the call fails.
+        """
+        deals = mt5.history_deals_get(datetime(2000, 1, 1), datetime.now() + timedelta(days=2))
+        if deals is None:
+            return None
+        balance_type = getattr(mt5, "DEAL_TYPE_BALANCE", 2)
+        total = sum(d.profit for d in deals if d.type == balance_type)
+        return round(total, 2) if total > 0 else None
+
     def get_current_price(self) -> Dict:
         """Get current bid/ask for the symbol."""
         tick = mt5.symbol_info_tick(self.symbol)

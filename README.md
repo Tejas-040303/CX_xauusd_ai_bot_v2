@@ -21,7 +21,7 @@ rules. Control and monitoring run through a Telegram bot.
 | **Platform** | Windows 64-bit **only** (`MetaTrader5` ships `win_amd64` wheels exclusively) |
 | **Python** | **3.12** required — see [§7](#7-known-issues--gotchas) |
 | **Instrument** | XAUUSD, M5 decisions with M15 structural context |
-| **Account model** | The5ers evaluation sized by `ACCOUNT_BALANCE` (currently $500; +10% target / −10% max drawdown) |
+| **Account model** | The5ers evaluation; limits sized from the live MT5 account (+10% target / −10% max drawdown) |
 | **Secrets needed** | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` — that's it |
 | **Claude API** | Declared in config, **never used**. `claude_brain.py` is empty. |
 | **MT5 credentials** | Not in `.env`. Inherited from the running MT5 terminal. |
@@ -153,24 +153,32 @@ progress (entry + 1 pip), then:
 ## 3. Risk model
 
 Two layers: The5ers' hard rules, and a tighter internal buffer that trips first.
-Every dollar amount is a percentage of `ACCOUNT_BALANCE` in `config.py`; change
-that one number when you change account size. Shown for $500:
+All limits are **percentages**; `RiskManager` turns them into dollars from the
+MT5 account itself, so nothing needs editing when the account size changes:
 
-| Control | Internal (`config.py`) | The5ers limit |
-|---|---|---|
-| Daily loss | `MAX_DAILY_LOSS_PCT` 4% = **$20** | 5% = $25 |
-| Total drawdown | — | 90% floor = $450 |
-| Profit target | — | +10% = $550 |
-| Per-trade risk | `MAX_TRADE_RISK_PCT` 1.5% = **$7.50** | — |
-| Lot-size reduction | at −20/−50/−80% of the daily stop; no new trades past −80% | — |
-| Lot size | 0.01 – 0.05 (capped by per-trade risk) | — |
-| Trades per session | 2 (`asian` / `london` / `london_ny_overlap` / `new_york`) | — |
-| Cooldown | `COOLDOWN_SECONDS` = 300s between trades | — |
+- **Initial balance** = the account's deposits in MT5 history (override with
+  `ACCOUNT_BALANCE` in `config.py`) → fixed max-loss floor.
+- **Day's base** = higher of balance/equity at **broker midnight** (how The5ers
+  measures daily loss) → daily stop and per-trade risk, recomputed every day
+  and saved, so a restart mid-day can't reset it.
+- **Day's loss** = base − current equity (floating P/L counts).
 
-`config.py` refuses to load if per-trade risk > daily stop or the daily stop
-isn't below The5ers' 5%. At startup the bot warns if MT5's balance is more than
-25% away from `ACCOUNT_BALANCE`, and resets the day's counters if it is now
-logged into a different MT5 account than the saved state belongs to.
+| Control | Internal (`config.py`) | The5ers limit | On a $500 day |
+|---|---|---|---|
+| Daily loss | `MAX_DAILY_LOSS_PCT` 4% of day's base | 5% of day's base | $20 (The5ers $25) |
+| Per-trade risk | `MAX_TRADE_RISK_PCT` 1.5% of day's base | — | $7.50 |
+| Total drawdown | — | 10% below initial balance (fixed) | floor $450 |
+| Lot-size reduction | at −20/−50/−80% of the day's stop; no new trades past −80% | — | −$4/−$10/−$16 |
+| Lot size | 0.01 – 0.05 (capped by per-trade risk) | — | |
+| Trades per session | 2 (`asian` / `london` / `london_ny_overlap` / `new_york`) | — | |
+| Cooldown | `COOLDOWN_SECONDS` = 300s between trades | — | |
+
+`config.py` refuses to load unless per-trade % ≤ daily stop % < The5ers' 5%.
+Startup prints the sized limits, warns if `ACCOUNT_BALANCE` is set and doesn't
+match the account's deposits, and resets the day's counters if MT5 is logged
+into a different account than the saved state belongs to. `/risk` in Telegram
+shows the live numbers. Backtests use `BACKTEST_INITIAL_CAPITAL` ($500) for the
+same percentages.
 
 On a small account the minimum lot dominates: 0.01 lot loses $1 per $1 gold
 move, so a $3–7 stop already risks $3–7. Trades that exceed the per-trade cap

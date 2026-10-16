@@ -3606,8 +3606,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE, MT5_SYMBOL,
-    SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE, ACCOUNT_BALANCE, DAILY_LOSS_LIMIT_5ERS,
-    MAX_TRADE_RISK, MAX_DAILY_LOSS, CONFIDENCE_THRESHOLD, SESSIONS,
+    SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE, ACCOUNT_BALANCE,
+    MAX_TRADE_RISK_PCT, MAX_DAILY_LOSS_PCT, THE5ERS_DAILY_LOSS_PCT,
+    CONFIDENCE_THRESHOLD, SESSIONS,
     BROKER_UTC_OFFSET_HOURS,
 )
 import retrain_e
@@ -3708,15 +3709,16 @@ class MidasBot:
             return
 
         acc = self.mt5.get_account_info()
-        balance = acc.get("balance", ACCOUNT_BALANCE)
+        balance = acc.get("balance", 0.0)
+
+        # Broker clock: session-feature check + the risk manager's day boundary
+        self._check_broker_utc_offset()
+
+        # Risk limits from this account (initial balance, today's base)
         if self.risk.bind_account(acc.get("login")):
             self.notifier.error(f"MT5 account changed to {acc.get('login')}: "
                                 f"today's risk counters were reset")
-        self.risk.update_balance(balance)
-        self._check_account_size(balance)
-
-        # Broker clock vs. what the session features assume
-        self._check_broker_utc_offset()
+        self._setup_account_risk(acc)
 
         # Bring Strategy E up to date with the market data since it was trained
         if self.retrain_mode != "skip":
@@ -3733,7 +3735,8 @@ class MidasBot:
         self.notifier.start_polling()
 
         # Notify
-        self.notifier.bot_started(balance, self.mode.upper())
+        self.notifier.bot_started(balance, self.mode.upper(),
+                                  self.risk.max_trade_risk, self.risk.max_daily_loss)
         self.logger.log_event("BOT_STARTED", {"mode": self.mode, "balance": balance})
 
         print(f"\n  ✅ Bot running | Balance: ${balance:,.2f}")
@@ -3823,18 +3826,39 @@ class MidasBot:
         if retrain_e.model_status()["state"] != "fresh":
             self._refresh_strategy_e()
 
-    def _check_account_size(self, balance: float):
-        """All $ limits are sized from config.ACCOUNT_BALANCE; warn if the
-        account MT5 is logged into is a very different size."""
-        print(f"  Risk sized for ${ACCOUNT_BALANCE:,.0f}: ${MAX_TRADE_RISK:.2f}/trade, "
-              f"${MAX_DAILY_LOSS:.2f}/day (The5ers daily ${DAILY_LOSS_LIMIT_5ERS:.2f})")
-        if balance and abs(balance / ACCOUNT_BALANCE - 1) > 0.25:
-            msg = (f"MT5 balance is ${balance:,.2f} but risk limits are sized for "
-                   f"ACCOUNT_BALANCE=${ACCOUNT_BALANCE:,.0f} (${MAX_TRADE_RISK:.2f}/trade, "
-                   f"${MAX_DAILY_LOSS:.2f}/day). Set ACCOUNT_BALANCE in config.py "
-                   f"to this account's starting balance.")
+    def _setup_account_risk(self, acc: dict):
+        """Size every risk limit from the MT5 account itself.
+
+        Initial balance (fixed max-loss floor) comes from the account's
+        deposit history, unless config.ACCOUNT_BALANCE overrides it. The
+        daily stop and per-trade risk follow the day's base (RiskManager).
+        """
+        detected = self.mt5.get_initial_balance()
+        if ACCOUNT_BALANCE:
+            initial, source = ACCOUNT_BALANCE, "config ACCOUNT_BALANCE"
+            if detected and abs(detected / ACCOUNT_BALANCE - 1) > 0.01:
+                msg = (f"config ACCOUNT_BALANCE=${ACCOUNT_BALANCE:,.2f} but this MT5 account's "
+                       f"deposits total ${detected:,.2f}. The max-loss floor uses the config "
+                       f"value; set ACCOUNT_BALANCE = None to follow the account.")
+                print(f"  WARNING: {msg}")
+                self.notifier.error(msg)
+        elif detected:
+            initial, source = detected, "MT5 deposit history"
+        else:
+            initial, source = acc.get("balance"), "current balance — no deposit history found"
+            msg = (f"Couldn't read this account's starting balance from MT5; using the "
+                   f"current balance ${initial:,.2f} for the max-loss floor. Set "
+                   f"ACCOUNT_BALANCE in config.py if that's not the starting balance.")
             print(f"  WARNING: {msg}")
             self.notifier.error(msg)
+
+        self.risk.set_initial_balance(initial)
+        self.risk.update_account(acc.get("balance"), acc.get("equity"))
+        r = self.risk
+        print(f"  Initial balance ${r.initial_balance:,.2f} ({source}) → "
+              f"max-loss floor ${r.max_loss_level:,.2f}")
+        print(f"  Today's base ${r.day_base:,.2f} → ${r.max_trade_risk:.2f}/trade, "
+              f"${r.max_daily_loss:.2f}/day (The5ers daily ${r.the5ers_daily_limit:.2f})")
 
     def _check_broker_utc_offset(self):
         """Warn if the broker's clock isn't what the session features assume."""
@@ -3843,6 +3867,7 @@ class MidasBot:
             print("  Broker UTC offset: unknown (no fresh tick — market closed?)")
             return
         print(f"  Broker server time: UTC{offset:+d}")
+        self.risk.day_offset_hours = offset  # trading day = broker calendar day
         if offset != BROKER_UTC_OFFSET_HOURS:
             msg = (f"Broker server time is UTC{offset:+d}, but session-range features "
                    f"(Strategy C's Asian range) assume UTC{BROKER_UTC_OFFSET_HOURS:+d}: "
@@ -3861,8 +3886,8 @@ class MidasBot:
         print(f"  Regime       : ON")
         print(f"  Dynamic TSL  : ON")
         print(f"  Dynamic Lots : 0.01-0.05")
-        print(f"  Risk Cap     : ${MAX_TRADE_RISK:.2f}/trade, ${MAX_DAILY_LOSS:.2f}/day "
-              f"(sized for ${ACCOUNT_BALANCE:,.0f})")
+        print(f"  Risk Cap     : {MAX_TRADE_RISK_PCT:.1%}/trade, {MAX_DAILY_LOSS_PCT:.0%}/day "
+              f"of the day's balance (The5ers {THE5ERS_DAILY_LOSS_PCT:.0%})")
         print(f"  Session Lim  : 2 per session")
         print(f"  Cooldown     : 10 min")
 
@@ -3944,8 +3969,14 @@ class MidasBot:
         session = self.risk.get_session(now)
         price = self.mt5.get_current_price()
 
+        # Limits follow the account: refresh balance/equity before checking them
+        acc = self.mt5.get_account_info()
+        if acc:
+            self.risk.update_account(acc.get("balance"), acc.get("equity"), now)
+
         print(f"\n  [{now.strftime('%H:%M')}] {price.get('bid',0):.2f} | "
-              f"{session} | DayPnL: ${self.risk.daily_pnl:+.2f}")
+              f"{session} | DayPnL: ${self.risk.day_pnl:+.2f} "
+              f"(stop -${self.risk.max_daily_loss:.2f})")
 
         # Risk pre-flight
         can_trade, reason = self.risk.can_trade(session, now)
@@ -4086,10 +4117,11 @@ class MidasBot:
         sl_distance = abs(entry - best_signal.sl_price)
         lot_result = self.lot_sizer.compute(
             n_strategies=n_agree, e_prob=e_prob, regime=regime,
-            daily_pnl=self.risk.daily_pnl, atr=atr, sl_distance=sl_distance,
+            daily_pnl=self.risk.day_pnl, atr=atr, sl_distance=sl_distance,
+            max_trade_risk=self.risk.max_trade_risk, max_daily_loss=self.risk.max_daily_loss,
         )
         if lot_result["lot_size"] <= 0:
-            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.daily_pnl:+.2f})")
+            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.day_pnl:+.2f})")
             return None
         best_signal.sub_conditions["dynamic_lot"] = lot_result["lot_size"]
         best_signal.sub_conditions["source"] = sources
@@ -4134,10 +4166,11 @@ class MidasBot:
 
         lot_result = self.lot_sizer.compute(
             n_strategies=0, e_prob=e_prob, regime=regime,
-            daily_pnl=self.risk.daily_pnl, atr=atr, sl_distance=sl_dist,
+            daily_pnl=self.risk.day_pnl, atr=atr, sl_distance=sl_dist,
+            max_trade_risk=self.risk.max_trade_risk, max_daily_loss=self.risk.max_daily_loss,
         )
         if lot_result["lot_size"] <= 0:
-            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.daily_pnl:+.2f})")
+            print(f"  Skip: lot sizer says no trade (day PnL ${self.risk.day_pnl:+.2f})")
             return None
 
         return TradeSignal(
@@ -4469,7 +4502,7 @@ class MidasBot:
             f"State     : {state}\n"
             f"Balance   : ${acc.get('balance', 0):,.2f}\n"
             f"Equity    : ${acc.get('equity', 0):,.2f}\n"
-            f"Day PnL   : ${self.risk.daily_pnl:+.2f}\n"
+            f"Day PnL   : ${self.risk.day_pnl:+.2f}\n"
             f"Day Trades: {self.risk.daily_trades}\n"
             f"Regime    : {top_regime}\n"
             f"E loaded  : {'Yes' if self.live_e.loaded else 'No'}\n"
@@ -4503,12 +4536,17 @@ class MidasBot:
         s = self.risk.get_status()
         return (
             f"🛡️ <b>RISK STATUS</b>\n"
-            f"Daily PnL    : ${s['daily_pnl']:+.2f}\n"
+            f"Day base     : ${s['day_base']:,.2f}\n"
+            f"Day loss     : ${s['day_loss']:.2f} of ${s['max_daily_loss']:.2f} "
+            f"(The5ers ${s['the5ers_daily_limit']:.2f})\n"
             f"Remaining    : ${s['daily_remaining']:.2f}\n"
+            f"Per trade    : ${s['max_trade_risk']:.2f}\n"
+            f"Closed PnL   : ${s['daily_pnl']:+.2f}\n"
             f"Daily Trades : {s['daily_trades']}\n"
             f"Sessions     : {s['session_trades']}\n"
             f"Locked       : {'YES ⛔' if s['is_locked'] else 'No'}\n"
             f"Balance      : ${s['balance']:,.2f}\n"
+            f"Max-loss floor: ${s['max_loss_level']:,.2f}\n"
             f"Drawdown     : {s['dd_from_start']:.1f}%"
         )
 
