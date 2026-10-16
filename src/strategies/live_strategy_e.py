@@ -1,63 +1,71 @@
 """
 Project MIDAS v2 — Live Strategy E Inference
-Loads the clean LightGBM model and generates predictions on live data.
-Handles feature debiasing (swing point shift) on-the-fly.
+Loads the LightGBM model and generates predictions on live data.
+
+Features are built by strategy_e_features.build_e_features(), the same
+function training uses, so live inputs match what the model learned from.
 """
 
 import json
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
-from pathlib import Path
 
-from config import MODELS_DIR, DATA_PROCESSED, ATR_PERIOD, SWING_LOOKBACK
+from config import MODELS_DIR
+from strategy_e_features import PIPELINE_VERSION, build_e_features
+
+MODEL_FILE = MODELS_DIR / "strategy_e_clean_final.txt"
+META_FILE = MODELS_DIR / "strategy_e_clean_metadata.json"
 
 
 class LiveStrategyE:
-    """
-    Live inference for Strategy E.
-    Uses the clean (debiased) final model.
-    Applies swing feature debiasing on-the-fly before prediction.
-    """
+    """Live inference for Strategy E."""
 
     def __init__(self):
         self.model = None
         self.feature_cols = None
+        self.meta = {}
         self.loaded = False
         self.missing_features = None  # Filled on first predict()
         self._load()
 
     def _load(self):
         """Load model and metadata."""
-        # Try clean model first, fall back to original
-        for meta_name, model_name in [
-            ("strategy_e_clean_metadata.json", "strategy_e_clean_final.txt"),
-            ("strategy_e_metadata.json", "strategy_e_final.txt"),
-        ]:
-            meta_path = MODELS_DIR / meta_name
-            model_path = MODELS_DIR / model_name
+        if not (META_FILE.exists() and MODEL_FILE.exists()):
+            print("  WARNING: Strategy E model not found. E will be disabled.")
+            return
 
-            if meta_path.exists() and model_path.exists():
-                with open(meta_path) as f:
-                    meta = json.load(f)
-                self.feature_cols = meta["feature_cols"]
-                self.model = lgb.Booster(model_file=str(model_path))
-                self.loaded = True
-                print(f"  Strategy E loaded: {model_name} ({len(self.feature_cols)} features)")
-                return
+        with open(META_FILE) as f:
+            self.meta = json.load(f)
+        self.feature_cols = self.meta["feature_cols"]
+        self.model = lgb.Booster(model_file=str(MODEL_FILE))
+        self.loaded = True
 
-        print("  WARNING: Strategy E model not found. E will be disabled.")
+        version = self.meta.get("pipeline_version", 1)
+        through = str(self.meta.get("trained_through", "unknown"))[:10]
+        print(f"  Strategy E loaded: {MODEL_FILE.name} ({len(self.feature_cols)} features, "
+              f"pipeline v{version}, data through {through})")
+        if version != PIPELINE_VERSION:
+            print(f"  WARNING: Strategy E model was built with feature pipeline v{version} "
+                  f"(current v{PIPELINE_VERSION}); retrain it: python src/retrain_e.py --force")
+
+    def reload(self):
+        """Pick up a freshly retrained model."""
+        self.model, self.feature_cols, self.meta = None, None, {}
+        self.loaded, self.missing_features = False, None
+        self._load()
+
+    def build_features(self, df_m5: pd.DataFrame, df_m15: pd.DataFrame) -> pd.DataFrame:
+        """Raw closed M5/M15 bars → model input frame (same pipeline as training)."""
+        return build_e_features(df_m5, df_m15, quiet=True)
 
     def predict(self, df: pd.DataFrame, idx: int) -> float:
         """
-        Get E's raw probability for the bar at idx.
-        Returns probability of BUY (>0.5 = buy, <0.5 = sell).
-        Returns 0.5 (neutral) if model not loaded or features missing.
+        Get E's raw probability for the bar at idx (a frame from build_features()).
+        Returns probability of BUY (>0.5 = buy, <0.5 = sell), 0.5 if not loaded.
         """
         if not self.loaded:
             return 0.5
-
-        row = df.iloc[idx]
 
         if self.missing_features is None:
             self.missing_features = [c for c in self.feature_cols if c not in df.columns]
@@ -66,81 +74,7 @@ class LiveStrategyE:
                       f"model features are not built live and will be NaN: "
                       f"{', '.join(self.missing_features[:8])}...")
 
-        # Build feature vector
-        features = []
-        for col in self.feature_cols:
-            val = row.get(col, np.nan)
-            features.append(val if not isinstance(val, str) else np.nan)
-
-        X = np.array(features).reshape(1, -1)
-        prob = self.model.predict(X)[0]
-        return float(prob)
-
-    def debias_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Apply swing feature debiasing to a DataFrame for E's prediction.
-        Shifts swing-derived features forward by SWING_LOOKBACK bars.
-
-        IMPORTANT: This modifies a COPY. The original df (used by A-D) is untouched.
-        """
-        df = df.copy()
-        n = SWING_LOOKBACK
-
-        # Core swing features
-        for col in ["swing_high", "swing_low"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n).fillna(0).astype(int)
-
-        for col in ["swing_high_price", "swing_low_price"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n)
-
-        # Re-derive downstream
-        if "swing_high_price" in df.columns:
-            df["last_swing_high"] = df["swing_high_price"].ffill()
-            df["dist_to_swing_high"] = df["close"] - df["last_swing_high"]
-        if "swing_low_price" in df.columns:
-            df["last_swing_low"] = df["swing_low_price"].ffill()
-            df["dist_to_swing_low"] = df["close"] - df["last_swing_low"]
-
-        atr_col = f"atr_{ATR_PERIOD}"
-        if atr_col in df.columns:
-            atr = df[atr_col].replace(0, np.nan)
-            if "dist_to_swing_high" in df.columns:
-                df["dist_to_swing_high_atr"] = df["dist_to_swing_high"] / atr
-            if "dist_to_swing_low" in df.columns:
-                df["dist_to_swing_low_atr"] = df["dist_to_swing_low"] / atr
-
-        # BOS features
-        for col in ["bos_bull", "bos_bear"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n).fillna(0).astype(int)
-
-        for col in ["bos_bull_level", "bos_bear_level",
-                    "ob_bull_high", "ob_bull_low", "ob_bear_high", "ob_bear_low",
-                    "ob_bull_impulse_size", "ob_bear_impulse_size"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n)
-
-        # Equal highs/lows
-        for col in ["equal_highs", "equal_lows", "equal_highs_count", "equal_lows_count",
-                    "equal_highs_level", "equal_lows_level"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n)
-
-        if "equal_highs_level" in df.columns:
-            df["last_equal_highs_level"] = df["equal_highs_level"].ffill()
-        if "equal_lows_level" in df.columns:
-            df["last_equal_lows_level"] = df["equal_lows_level"].ffill()
-
-        if "last_equal_highs_level" in df.columns and atr_col in df.columns:
-            df["dist_to_eq_highs_atr"] = (df["close"] - df["last_equal_highs_level"]) / atr
-        if "last_equal_lows_level" in df.columns and atr_col in df.columns:
-            df["dist_to_eq_lows_atr"] = (df["close"] - df["last_equal_lows_level"]) / atr
-
-        # M15 BOS
-        for col in ["m15_bos_bull", "m15_bos_bear"]:
-            if col in df.columns:
-                df[col] = df[col].shift(n).fillna(0).astype(int)
-
-        return df
+        row = df.iloc[idx]
+        X = np.array([[pd.to_numeric(row.get(col, np.nan), errors="coerce")
+                       for col in self.feature_cols]], dtype=float)
+        return float(self.model.predict(X)[0])

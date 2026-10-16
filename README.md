@@ -181,7 +181,7 @@ CX_xauusd_ai_bot_v2/
 ├── requirements.txt
 ├── .env.example           <- copy to .env
 └── src/
-    ├── config.py              Central config + .env loading. EDIT PROJECT_ROOT.
+    ├── config.py              Central config + .env loading (MIDAS_PROJECT_ROOT to relocate).
     ├── main.py                Live bot. Active code starts at line 3571.
     ├── feature_engineering.py FeatureEngine. Active code starts at line 1050.
     │
@@ -199,13 +199,15 @@ CX_xauusd_ai_bot_v2/
     │   ├── strategy_c.py      Session breakout
     │   ├── strategy_d.py      Trend continuation
     │   ├── strategy_e.py      LightGBM (backtest-side)
-    │   └── live_strategy_e.py LightGBM (live inference + debiasing)
+    │   └── live_strategy_e.py LightGBM (live inference)
     │
     ├── DATA + TRAINING PIPELINE ────────────────────────────────
-    ├── data_downloader.py         MT5 -> data/raw/*.csv
-    ├── strategy_e_data_prep.py    features + labels -> parquet
+    ├── data_downloader.py         MT5 -> data/raw/*.csv (--update appends new bars)
+    ├── strategy_e_features.py     E features: ONE pipeline for training AND live
+    ├── retrain_e.py               keeps E current: sync -> retrain -> gate -> swap
+    ├── strategy_e_data_prep.py    features + labels -> parquet (research)
     ├── strategy_e_train.py        walk-forward LightGBM
-    ├── strategy_e_clean_retrain.py debias -> retrain -> backtest  [USE THIS]
+    ├── strategy_e_clean_retrain.py fixed-window retrain + backtest (research)
     ├── backtester.py              engine + metrics + equity curves
     │
     ├── RESEARCH RUNNERS (optional, not needed to trade) ─────────
@@ -232,8 +234,9 @@ Generated at runtime, gitignored, **not in the repo**:
 ```text
 data/raw/          XAUUSD_{M1,M3,M5,M15}.csv     from data_downloader.py
 data/processed/    *_features.csv, *.parquet      from the E pipeline
-models/            strategy_e_clean_final.txt     from clean_retrain
-                   strategy_e_clean_metadata.json
+models/            strategy_e_clean_final.txt     from retrain_e (or clean_retrain)
+                   strategy_e_clean_metadata.json  feature list, pipeline version, trained_through
+                   archive/<time>/                 previous models
 logs/              trades.json, daily_state.json, cumulative.json
 backtest_results/  *.json, *.png
 ```
@@ -283,9 +286,11 @@ python src/data_downloader.py            # all timeframes
 python src/data_downloader.py --tf M5    # one timeframe
 python src/data_downloader.py --verify   # integrity check, no download
 
-# Rebuild Strategy E
-python src/strategy_e_data_prep.py
-python src/strategy_e_clean_retrain.py
+# Strategy E (main.py also does this at startup when the model is >7 days stale)
+python src/retrain_e.py --check          # model status
+python src/retrain_e.py                  # sync new bars + retrain if stale
+python src/retrain_e.py --force          # retrain now
+python src/main.py --skip-retrain        # start without checking the model
 
 # Sanity check config
 python src/config.py
@@ -298,11 +303,9 @@ python src/config.py
 These are real and were verified against the code. Read them before trusting a
 run.
 
-**1. `PROJECT_ROOT` is hardcoded to another machine.**
-`src/config.py:14` is `Path(r"E:\GenAI\Projects\CX_xauusd_ai_bot_v2")`. On any
-other path this silently creates `data/`, `models/`, `logs/` in the wrong place
-and Strategy E will not be found. **Must be edited before first run** — see
-SETUP.md Step 2.
+**1. ~~`PROJECT_ROOT` is hardcoded to another machine.~~ Fixed.**
+It is now the repo root (derived from `config.py`'s location); set
+`MIDAS_PROJECT_ROOT` in `.env` to keep data/models elsewhere.
 
 **2. Python 3.12+ is required, not optional.**
 `src/run_combined_bcd.py:317-321` uses PEP 701 nested same-quote f-strings
@@ -312,34 +315,14 @@ every file compiles on 3.12 and 3.13; `run_combined_bcd.py` fails on 3.10/3.11.
 Only that one research runner is affected — the live path works on 3.11 — but
 3.12 avoids the whole question.
 
-**3. Strategy E has a train/serve feature skew.**
-`strategy_e_data_prep.py` computes `compute_fvg()` **and** `compute_smc()` on the
-M5 frame, so the model trains on ~30 M5-level `fvg_*`, `bos_*`, `ob_*` and
-`equal_*` columns. But `main.py:_build_features()` only calls `compute_shared`,
-`compute_trend` and `compute_session_range` on M5 — it runs FVG/SMC on **M15
-only**. At inference `LiveStrategyE.predict()` resolves the missing columns via
-`row.get(col, np.nan)`, so those features arrive as `NaN`.
-
-LightGBM accepts `NaN` natively and routes it down the default branch, so
-**nothing crashes and no warning is printed** — E just predicts from a degraded
-feature set that does not match its training distribution. Live behaviour will
-not reproduce the backtest numbers. Strategies A–D are unaffected (they read the
-`m15_*` columns, which are computed correctly).
-
-Fix, if you want E's live predictions to match its backtest: add the two missing
-calls in `main.py:_build_features()`:
-
-```python
-df_m5 = self.engine.compute_shared(df_m5, "M5")
-df_m5 = self.engine.compute_fvg(df_m5)      # <- add
-df_m5 = self.engine.compute_smc(df_m5)      # <- add
-df_m5 = self.engine.compute_trend(df_m5)
-df_m5 = self.engine.compute_session_range(df_m5)
-```
-
-Re-run a backtest afterwards — this changes E's inputs, so its behaviour will
-shift. Until it is fixed, `--dry-run` output for `E_independent` signals should
-be treated as unvalidated.
+**3. ~~Strategy E has a train/serve feature skew.~~ Fixed.**
+Live inference skipped M5 FVG/SMC, the ATR-relative features and the
+categorical encodings, so 28 of 133 model inputs were NaN. Training and live
+now both call `strategy_e_features.build_e_features()`. The same change fixed
+two leaks in training: M15 context was joined by bar *open* time (up to 10 min
+of future data) and the ATR-relative OB/equal-level distances were computed
+before debiasing. Feature pipeline is versioned (`PIPELINE_VERSION`); a model
+from an older version is retrained automatically.
 
 **4. Large blocks of dead code.**
 `main.py` is 4,396 lines of which the first 3,570 are a commented-out earlier
@@ -361,7 +344,7 @@ placeholders for unbuilt features, not missing files.
 (superseded by its inline `_make_decision` and by `risk_manager.py`). Editing
 them changes nothing at runtime.
 
-**8. Banner/config drift.** The banner says `$40/trade`; `MAX_TRADE_RISK` is 55.
+**8. ~~Banner/config drift.~~ Fixed.** Banners now print `MAX_TRADE_RISK` / `MAX_DAILY_LOSS` from config.
 
 ---
 
@@ -373,7 +356,9 @@ Symptom-first, since the failure modes are distinctive.
 |---|---|---|
 | `MT5 initialization failed` | terminal not running, or not logged in | open MT5, log in, retry |
 | `Symbol XAUUSD not found` | broker uses a suffix (`XAUUSD.r`, `XAUUSDm`) | set `MT5_SYMBOL` in `config.py` to the exact Market Watch name |
-| `Strategy E model not found. E will be disabled.` | `models/` empty, or wrong `PROJECT_ROOT` | `config.py:14`, then rebuild (SETUP Step 6) |
+| `Strategy E model not found. E will be disabled.` | first retrain failed, or models elsewhere | `python src/retrain_e.py --force`; `MIDAS_PROJECT_ROOT` (SETUP Step 2) |
+| `Strategy E retrain rejected` | new model failed its out-of-sample check | old model kept; inspect printed AUC (SETUP Step 5) |
+| `Broker server time is UTC+3 ...` warning | broker DST; session-range features assume `BROKER_UTC_OFFSET_HOURS` | set it in `config.py` |
 | `Telegram: disabled (no token/chat_id)` | `.env` missing, blank, or unreadable | `.env` goes in the project root, beside `src/` |
 | Bot runs, no Telegram messages | token valid, wrong chat id | `/status` in the chat; notifier ignores other chat ids |
 | `ORDER FAILED: 10027` | algo trading disabled in terminal | MT5 → Tools → Options → Expert Advisors |
@@ -409,4 +394,3 @@ resets the day's risk tracking, which is exactly as dangerous as it sounds.
   leaves an open trade for you to manage manually. SL/TP stay live at the broker.
 - **One instance only.** Two bots on one terminal will both see "no position",
   both trade, and both blow the session limits.
-- Strategy E's live predictions are degraded until gotcha 3 is fixed.

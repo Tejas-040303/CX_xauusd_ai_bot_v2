@@ -34,7 +34,7 @@ from typing import Callable, Dict, Optional
 
 import requests
 
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MAX_TRADE_RISK, MAX_DAILY_LOSS
 
 
 class TelegramNotifier:
@@ -363,7 +363,7 @@ class TelegramNotifier:
             f"Regime     : ON\n"
             f"Dynamic TSL: ON\n"
             f"Lot Range  : 0.01-0.05\n"
-            f"Risk Cap   : $40/trade, $100/day\n"
+            f"Risk Cap   : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day\n"
             f"Time       : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.send(msg)

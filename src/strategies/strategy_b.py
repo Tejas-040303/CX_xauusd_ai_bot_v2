@@ -432,8 +432,11 @@ class StrategyB(StrategyBase):
         sub_conditions["not_news_fvg"] = not is_news
 
         # ── Build signal ──
-        # entry_price = row["close"]  # Enter at current close (after rejection confirmed)
-        entry_price = fvg.ce  # More aggressive: enter at CE level once touched and rejected
+        # Enter at the close of the rejection candle: the bot sends a MARKET
+        # order, so that's the price it gets. (Using fvg.ce here sized SL/TP
+        # from a price the order never fills at; the order was rejected when
+        # TP ended up below the market.)
+        entry_price = row["close"]
         sl_price = fvg.bottom - (SPREAD_SIMULATION_PIPS * PIP_VALUE * 2)  # Beyond far edge + buffer
         risk_distance = entry_price - sl_price
 
@@ -556,8 +559,8 @@ class StrategyB(StrategyBase):
         sub_conditions["not_news_fvg"] = not is_news
 
         # ── Build signal ──
-        # entry_price = row["close"]
-        entry_price = fvg.ce
+        # Market order → entry is the rejection candle's close (see bull side)
+        entry_price = row["close"]
         sl_price = fvg.top + (SPREAD_SIMULATION_PIPS * PIP_VALUE * 2)
         risk_distance = sl_price - entry_price
 

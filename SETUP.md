@@ -7,7 +7,7 @@ without risking the account on a stale config.
 Work top to bottom. Each step has a **verify** command — if it fails, fix it
 before moving on. A quiet failure here shows up later as a bad trade.
 
-**Time:** ~60–90 minutes, most of it the data download and the model retrain.
+**Time:** ~60–90 minutes, most of it the first data download and model training (done automatically on first start).
 
 ---
 
@@ -72,29 +72,17 @@ If `MetaTrader5` fails here, you are on 32-bit Python or a non-Windows box.
 
 ---
 
-## Step 2 — Fix `PROJECT_ROOT` (do this before anything else)
+## Step 2 — Check where data, models and logs go
 
-`src/config.py` line 14 still points at the machine this was built on:
+`PROJECT_ROOT` in `src/config.py` is the repo root, worked out from where
+`config.py` lives. Every data, model and log path derives from it, so a fresh
+clone works wherever you put it.
 
-```python
-PROJECT_ROOT = Path(r"E:\GenAI\Projects\CX_xauusd_ai_bot_v2")
-```
+If your existing `data/` and `models/` live somewhere else (for example an old
+`E:\GenAI\Projects\CX_xauusd_ai_bot_v2`), point the bot there in `.env`:
 
-Every data, model and log path derives from it. Leave it wrong and the bot
-creates empty folders on a drive you don't care about, then reports "Strategy E
-model not found" forever.
-
-**Pick one.** Either hardcode your real path:
-
-```python
-PROJECT_ROOT = Path(r"C:\Users\<you>\projects\CX_xauusd_ai_bot_v2")
-```
-
-Or make it portable, so this never bites again (`config.py` lives in `src/`, so
-one `.parent` reaches the repo root):
-
-```python
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+```ini
+MIDAS_PROJECT_ROOT=E:\GenAI\Projects\CX_xauusd_ai_bot_v2
 ```
 
 **Verify:**
@@ -103,9 +91,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 python src\config.py
 ```
 
-The printed `Data dir` must be inside your actual project folder. It also creates
-`data/`, `models/`, `logs/`, `backtest_results/` — confirm they appeared where you
-expect, not on `E:\`.
+The printed `Data dir` must be the folder you expect. It also creates
+`data/`, `models/`, `logs/`, `backtest_results/` there.
 
 ---
 
@@ -206,84 +193,61 @@ python -c "import sys; sys.path.insert(0,'src'); from telegram_notifier import T
 
 ---
 
-## Step 5 — Re-download market data
+## Step 5 — Market data and Strategy E (automatic)
 
-The repo ships no data — `data/` is gitignored. Your old CSVs are months stale
-regardless, and Strategy E should be retrained on data that includes recent
-regimes.
+**`python src\main.py` does this for you.** On every start it checks Strategy
+E's model and, if the model's training data is more than
+`E_MODEL_MAX_AGE_DAYS` (7) days old, was built with an older feature pipeline,
+or doesn't exist yet:
 
-MT5 must be running and logged in (Step 3).
+1. appends the M5/M15 bars missing since the last download to `data/raw/`
+   (a full download from `DATA_START_YEAR` the first time),
+2. retrains on the last `E_TRAIN_YEARS` (4) years, ending at the newest bar,
+3. checks the new model on the latest `E_TEST_MONTHS` (6) months it has never
+   seen, and only swaps it in if AUC ≥ `E_MIN_TEST_AUC` (0.52),
+4. archives the previous model to `models/archive/<time>/`.
+
+You get a Telegram message when it starts and when it finishes (or is
+rejected/fails — then the old model stays). Left running, the bot repeats the
+check on Saturdays while the market is closed. Settings are in `config.py`
+under "Strategy E auto-retrain".
+
+The first run takes a while (full download + feature build + three training
+runs). To do it ahead of time instead of at bot start:
 
 ```bat
-python src\data_downloader.py
+python src\retrain_e.py --check     :: is the model fresh?
+python src\retrain_e.py             :: sync + retrain if stale (MT5 running)
+python src\retrain_e.py --force     :: retrain now
 ```
 
-Downloads M1, M3, M5, M15 from `DATA_START_YEAR` (2021) to today, in 6-month
-chunks, into `data/raw/`. M1 is the slow one. Gaps reported for weekends and
-holidays are normal.
+`python src\main.py --skip-retrain` starts with whatever model is saved;
+`--retrain` forces a retrain first.
 
-**Only M5 and M15 are needed** for training and live trading. To save time:
-
-```bat
-python src\data_downloader.py --tf M5
-python src\data_downloader.py --tf M15
-```
+**History depth.** MT5 only serves as many bars as the terminal keeps:
+**Tools → Options → Charts → Max bars in chart** (set it to Unlimited). If the
+first download stops short of `DATA_START_YEAR`, raise that setting or the year.
 
 **Verify:**
 
 ```bat
 python src\data_downloader.py --verify
+python src\retrain_e.py --check
 ```
 
-Check the end date reaches roughly today and the candle counts are in the
-millions for M1 / hundreds of thousands for M5. If the range stops short, your
-broker limits history depth — raise `DATA_START_YEAR` in `config.py` to whatever
-they actually serve and re-run.
+Expect data ending roughly today and `"state": "fresh"`.
+
+### Research path (optional)
+
+`strategy_e_data_prep.py` → `strategy_e_clean_retrain.py` still exist for the
+fixed-window walk-forward study and threshold backtests. They use the same
+feature pipeline (`src/strategy_e_features.py`) as the live bot. Their final
+model only sees data before `HOLDOUT_START`, so the bot will consider it stale
+and retrain on startup unless you pass `--skip-retrain`.
 
 ---
 
-## Step 6 — Rebuild Strategy E
-
-`models/` is gitignored too, so the LightGBM model must be retrained. Without it
-the bot still runs A–D but prints `Strategy E unavailable`.
-
-```bat
-python src\strategy_e_data_prep.py
-```
-
-Computes every feature stage on M5, merges M15 context, builds ATR-filtered
-labels, and writes `data/processed/strategy_e_train_ready.parquet`. Slow — it
-computes features over years of M5 bars. The intermediate
-`XAUUSD_M5_all_features.parquet` is cached, so a re-run is much faster.
-
-```bat
-python src\strategy_e_clean_retrain.py
-```
-
-This is the one that matters. It debiases the swing-derived features (shifting
-them by `SWING_LOOKBACK` to remove lookahead), retrains walk-forward, and
-backtests on clean data. It writes:
-
-- `models/strategy_e_clean_final.txt` ← what the live bot loads
-- `models/strategy_e_clean_metadata.json` ← the feature list
-- `backtest_results/strategy_e_clean_backtest.json`
-
-> Use `strategy_e_clean_retrain.py`, not `strategy_e_train.py`.
-> `LiveStrategyE` prefers the `_clean_` model and falls back to the
-> non-debiased `strategy_e_final.txt`, whose backtest numbers are inflated by
-> lookahead bias. Produce the clean one.
-
-**Verify:**
-
-```bat
-python -c "import sys; sys.path.insert(0,'src'); from strategies.live_strategy_e import LiveStrategyE; e=LiveStrategyE(); print('loaded:', e.loaded, '| features:', len(e.feature_cols or []))"
-```
-
-Expect `loaded: True` and a feature count in the low hundreds.
-
----
-
-## Step 7 — Dry run
+## Step 6 — Dry run
 
 Never go straight to orders after a config change.
 
@@ -295,7 +259,9 @@ Confirm, in order:
 
 - [ ] Banner prints
 - [ ] `MT5 connected` with the **new** account number and balance
-- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features)`
+- [ ] `Strategy E model is up to date (...)` — or a retrain that ends in `✅ Strategy E retrained`
+- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v2, data through <recent date>)`
+- [ ] `Broker server time: UTC+2` (a `UTC+3` warning means the broker is on DST — see README §8)
 - [ ] `Telegram command listener started` (not `Telegram: disabled`)
 - [ ] A "bot started" message arrives on your phone
 - [ ] A new `[HH:MM] price | session | DayPnL` line every ~5 minutes
@@ -309,7 +275,7 @@ Kill it with Ctrl+C or `/stop`.
 
 ---
 
-## Step 8 — Demo, then live
+## Step 7 — Demo, then live
 
 **Demo first**, for at least a few sessions:
 
@@ -340,19 +306,17 @@ Prompts for a typed `CONFIRM`. Before you type it:
 ## Quick reference
 
 ```bat
-:: every session
+:: every session (also refreshes Strategy E when it is >7 days stale)
 .venv\Scripts\activate
 python src\main.py --dry-run
 
-:: refresh data + model (monthly-ish)
-python src\data_downloader.py --tf M5
-python src\data_downloader.py --tf M15
-python src\strategy_e_data_prep.py
-python src\strategy_e_clean_retrain.py
+:: refresh data + model by hand
+python src\retrain_e.py --force
 
 :: health checks
 python src\config.py
 python src\data_downloader.py --verify
+python src\retrain_e.py --check
 ```
 
 ---
@@ -363,7 +327,8 @@ Full symptom table in **README §8**. The ones that bite on a cold start:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Strategy E model not found` | `PROJECT_ROOT` wrong, or Step 6 skipped | Step 2, then Step 6 |
+| `Strategy E model not found` | data/models elsewhere, or the first retrain failed | Step 2, then `python src\\retrain_e.py --force` |
+| `Strategy E retrain rejected` | new model failed the out-of-sample check | old model kept; see the printed AUC, retry after more data |
 | `Telegram: disabled` | `.env` missing or values blank | Step 4c — `.env` goes in the project root |
 | `enabled: True` but no messages | wrong chat id | Step 4b — and send `/start` to your bot |
 | `MT5 initialization failed` | terminal closed or logged out | Step 3 |

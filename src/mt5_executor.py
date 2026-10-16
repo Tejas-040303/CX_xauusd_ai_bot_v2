@@ -111,6 +111,22 @@ class MT5Executor:
             "time": datetime.fromtimestamp(tick.time),
         }
 
+    def get_broker_utc_offset(self) -> Optional[int]:
+        """Broker server time minus UTC, in whole hours (e.g. 2 or 3).
+
+        MT5 timestamps are server wall-clock time encoded as if it were UTC,
+        so a fresh tick's time minus the real UTC time is the offset.
+        None when the last tick is stale (market closed) or MT5 has no tick.
+        """
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return None
+        diff = tick.time - time.time()
+        hours = round(diff / 3600)
+        if abs(diff - hours * 3600) > 300 or abs(hours) > 14:
+            return None
+        return int(hours)
+
     # ─── Data Fetching ────────────────────────────────────
 
     def fetch_bars(self, timeframe_name: str, count: int = 500) -> Optional[pd.DataFrame]:

@@ -550,7 +550,11 @@ def main():
 
     # ── Debias swing features ─────────────────────────────
     print("\n[2/4] Debiasing swing features...")
-    df = debias_swing_features(df)
+    from strategy_e_features import is_debiased_dataset
+    if is_debiased_dataset(data_path):
+        print("    Already debiased by strategy_e_features — skipping")
+    else:
+        df = debias_swing_features(df)
 
     # ── Verify models exist ───────────────────────────────
     print("\n[3/4] Checking walk-forward models...")

@@ -129,7 +129,8 @@ class RiskManager:
             (allowed: bool, adjusted_lot: float, reason: str)
         """
         # NaN compares False everywhere below, so it would sail through every check
-        if not (math.isfinite(sl_distance) and sl_distance > 0 and math.isfinite(lot_size)):
+        if not (math.isfinite(sl_distance) and sl_distance > 0
+                and math.isfinite(lot_size) and lot_size > 0):
             return False, 0, f"Invalid SL distance/lot ({sl_distance}, {lot_size})"
 
         # Calculate dollar risk

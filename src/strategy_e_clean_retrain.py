@@ -34,6 +34,8 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+from strategy_e_features import PIPELINE_VERSION, is_debiased_dataset
+
 from config import (
     DATA_PROCESSED, MODELS_DIR, BACKTEST_DIR,
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE, SWING_LOOKBACK,
@@ -574,9 +576,13 @@ def main():
 
     print(f"  Loaded: {len(df):,} rows, {len(df.columns)} columns")
 
-    # Debias swing features
-    print("\n  Debiasing swing features (shift by {})...".format(SWING_LOOKBACK))
-    df = debias_swing_features(df)
+    # Debias swing features — unless the dataset was built by
+    # strategy_e_features, which already did (shifting twice would be wrong)
+    if is_debiased_dataset(src_path):
+        print("\n  Swing features already debiased by strategy_e_features")
+    else:
+        print("\n  Debiasing swing features (shift by {})...".format(SWING_LOOKBACK))
+        df = debias_swing_features(df)
 
     # Create labels on debiased data
     print("\n  Creating labels on debiased data...")
@@ -800,6 +806,11 @@ def main():
                                  for w, m in all_results.items()},
         "feature_importance_top20": importance.head(20)[["feature", "gain_pct"]].to_dict("records"),
         "pipeline": "clean_retrain",
+        # Read by retrain_e.model_status(): this final model only saw data
+        # before HOLDOUT_START, so the live bot will consider it stale and
+        # retrain on recent data unless started with --skip-retrain.
+        "pipeline_version": PIPELINE_VERSION if is_debiased_dataset(src_path) else 1,
+        "trained_through": str(final_train["datetime"].max()),
     }
 
     meta_path = MODELS_DIR / "strategy_e_clean_metadata.json"
