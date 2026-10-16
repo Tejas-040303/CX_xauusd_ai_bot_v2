@@ -32,7 +32,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from config import (
-    DATA_PROCESSED, MODELS_DIR, BACKTEST_DIR,
+    DATA_PROCESSED, RESEARCH_MODELS_DIR, BACKTEST_DIR,
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE,
     MAX_DAILY_LOSS, MAX_TRADE_RISK,
     LOT_SIZE_SINGLE, LOT_SIZE_MIN, LOT_SIZE_MAX,
@@ -95,7 +95,7 @@ def run_backtest(df, feature_cols, prob_threshold, execution_mode="instant"):
     max_dd = 0.0
 
     for seg in WF_MODEL_MAP:
-        model_path = MODELS_DIR / seg["model"]
+        model_path = RESEARCH_MODELS_DIR / seg["model"]
         if not model_path.exists():
             continue
 
@@ -403,14 +403,14 @@ def main():
     df = pd.read_parquet(data_path)
     df["datetime"] = pd.to_datetime(df["datetime"])
 
-    meta_path = MODELS_DIR / "strategy_e_clean_metadata.json"
+    meta_path = RESEARCH_MODELS_DIR / "strategy_e_clean_metadata.json"
     with open(meta_path) as f:
         feature_cols = json.load(f)["feature_cols"]
     print(f"  Data: {len(df):,} rows, {len(feature_cols)} features")
 
     # Verify models
     for seg in WF_MODEL_MAP:
-        p = MODELS_DIR / seg["model"]
+        p = RESEARCH_MODELS_DIR / seg["model"]
         print(f"  {seg['model']}: {'✅' if p.exists() else '❌'}")
 
     # Run both modes

@@ -17,11 +17,16 @@ PROJECT_ROOT = Path(os.getenv("MIDAS_PROJECT_ROOT") or Path(__file__).resolve().
 DATA_RAW = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
+# Walk-forward/backtest models from the research scripts. Kept apart from the
+# live model (models/strategy_e_clean_final.txt, written by retrain_e.py) so
+# running a backtest never replaces what the bot trades with, and the bot's
+# retrain never leaks into a backtest.
+RESEARCH_MODELS_DIR = MODELS_DIR / "research"
 LOGS_DIR = PROJECT_ROOT / "logs"
 BACKTEST_DIR = PROJECT_ROOT / "backtest_results"
 
 # Create dirs if they don't exist
-for d in [DATA_RAW, DATA_PROCESSED, MODELS_DIR, LOGS_DIR, BACKTEST_DIR]:
+for d in [DATA_RAW, DATA_PROCESSED, MODELS_DIR, RESEARCH_MODELS_DIR, LOGS_DIR, BACKTEST_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ─── MT5 Settings ────────────────────────────────────────

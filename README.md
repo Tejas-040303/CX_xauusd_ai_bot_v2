@@ -255,9 +255,10 @@ Generated at runtime, gitignored, **not in the repo**:
 ```text
 data/raw/          XAUUSD_{M1,M3,M5,M15}.csv     from data_downloader.py
 data/processed/    *_features.csv, *.parquet      from the E pipeline
-models/            strategy_e_clean_final.txt     from retrain_e (or clean_retrain)
+models/            strategy_e_clean_final.txt     LIVE model, from retrain_e
                    strategy_e_clean_metadata.json  feature list, pipeline version, trained_through
                    archive/<time>/                 previous models
+                   research/                       walk-forward models from clean_retrain (backtests only)
 logs/              trades.json, daily_state.json, cumulative.json
 backtest_results/  *.json, *.png
 ```

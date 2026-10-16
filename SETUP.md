@@ -245,11 +245,19 @@ Expect data ending roughly today and `"state": "fresh"`.
 
 ### Research path (optional)
 
-`strategy_e_data_prep.py` → `strategy_e_clean_retrain.py` still exist for the
-fixed-window walk-forward study and threshold backtests. They use the same
-feature pipeline (`src/strategy_e_features.py`) as the live bot. Their final
-model only sees data before `HOLDOUT_START`, so the bot will consider it stale
-and retrain on startup unless you pass `--skip-retrain`.
+Backtests for Strategy E and for all strategies combined:
+
+```bat
+python src\strategy_e_data_prep.py      :: E dataset from data/raw (same features as live)
+python src\strategy_e_clean_retrain.py  :: walk-forward models + E-only threshold backtest
+python src\run_combined_abcde.py        :: A-D baseline vs +E validator / +E independent / full A-E
+```
+
+They use the same feature pipeline (`src/strategy_e_features.py`) as the live
+bot, and write their models to `models/research/`, so they never replace the
+live model (`models/strategy_e_clean_final.txt`, from `retrain_e.py`), and the
+bot's retraining never leaks into a backtest. Every backtest segment is
+predicted by a model trained only on earlier data.
 
 ---
 

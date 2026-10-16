@@ -27,7 +27,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    DATA_RAW, DATA_PROCESSED, MODELS_DIR, BACKTEST_DIR,
+    DATA_RAW, DATA_PROCESSED, RESEARCH_MODELS_DIR, BACKTEST_DIR,
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE,
     SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE,
 )
@@ -66,7 +66,7 @@ WF_MODEL_MAP = [
 
 def precompute_e_predictions() -> dict:
     """Load clean models and precompute E predictions."""
-    meta_path = MODELS_DIR / "strategy_e_clean_metadata.json"
+    meta_path = RESEARCH_MODELS_DIR / "strategy_e_clean_metadata.json"
     if not meta_path.exists():
         return {}
     with open(meta_path) as f:
@@ -81,7 +81,7 @@ def precompute_e_predictions() -> dict:
 
     predictions = {}
     for seg in WF_MODEL_MAP:
-        model_path = MODELS_DIR / seg["model"]
+        model_path = RESEARCH_MODELS_DIR / seg["model"]
         if not model_path.exists():
             continue
         model = lgb.Booster(model_file=str(model_path))
