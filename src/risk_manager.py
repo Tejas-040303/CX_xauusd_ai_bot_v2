@@ -11,7 +11,7 @@ Tracks:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -22,6 +22,18 @@ from config import (
     LOT_SIZE_MIN, LOT_SIZE_MAX, XAUUSD_POINT_VALUE, PIP_VALUE,
     LOGS_DIR, DAILY_STATE_FILE,
 )
+
+
+def _to_utc(dt: Optional[datetime]) -> datetime:
+    """Return dt as a timezone-aware UTC datetime (now if None).
+
+    Naive datetimes are treated as machine-local time (what datetime.now()
+    returns) — this also covers last_trade_time values persisted by older
+    versions of the state file.
+    """
+    if dt is None:
+        return datetime.now(timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class RiskManager:
@@ -64,7 +76,7 @@ class RiskManager:
         Returns:
             (allowed: bool, reason: str)
         """
-        now = current_time or datetime.now()
+        now = _to_utc(current_time)
         today = now.strftime("%Y-%m-%d")
 
         # Reset daily state if new day
@@ -140,7 +152,7 @@ class RiskManager:
 
     def record_trade_open(self, ticket: int, session: str, current_time: datetime = None):
         """Record that a trade was opened."""
-        now = current_time or datetime.now()
+        now = _to_utc(current_time)
 
         self.open_trade_ticket = ticket
         self.last_trade_time = now
@@ -174,7 +186,7 @@ class RiskManager:
 
     def get_session(self, dt: datetime = None) -> str:
         """Determine current trading session from UTC hour."""
-        hour = (dt or datetime.utcnow()).hour
+        hour = _to_utc(dt).hour
 
         if 12 <= hour < 14:
             return "london_ny_overlap"
@@ -202,10 +214,10 @@ class RiskManager:
             "daily_trades": self.daily_trades,
             "session_trades": self.session_trades,
             "is_daily_locked": self.is_daily_locked,
-            "last_trade_time": str(self.last_trade_time) if self.last_trade_time else None,
+            "last_trade_time": self.last_trade_time.isoformat() if self.last_trade_time else None,
             "open_trade_ticket": self.open_trade_ticket,
             "current_balance": round(self.current_balance, 2),
-            "updated_at": str(datetime.now()),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
@@ -224,7 +236,7 @@ class RiskManager:
             with open(self.state_file) as f:
                 state = json.load(f)
 
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
             # Only restore if same day
             if state.get("current_date") == today:
@@ -238,8 +250,8 @@ class RiskManager:
 
                 if state.get("last_trade_time"):
                     try:
-                        self.last_trade_time = datetime.fromisoformat(
-                            state["last_trade_time"].replace("Z", ""))
+                        self.last_trade_time = _to_utc(datetime.fromisoformat(
+                            state["last_trade_time"].replace("Z", "+00:00")))
                     except (ValueError, AttributeError):
                         pass
 
