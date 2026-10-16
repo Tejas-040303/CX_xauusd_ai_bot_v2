@@ -327,11 +327,15 @@ class MT5Executor:
             return True
         return False
 
-    def get_open_positions(self) -> list:
-        """Get all open positions for the symbol."""
+    def get_open_positions(self) -> Optional[list]:
+        """Get all open positions for the symbol.
+
+        Returns None if the MT5 call failed (connection hiccup), so callers
+        can tell "no positions" apart from "couldn't ask".
+        """
         positions = mt5.positions_get(symbol=self.symbol)
         if positions is None:
-            return []
+            return None
 
         return [{
             "ticket": p.ticket,

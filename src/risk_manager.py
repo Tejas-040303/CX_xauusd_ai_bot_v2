@@ -11,6 +11,7 @@ Tracks:
 """
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict
@@ -127,6 +128,10 @@ class RiskManager:
         Returns:
             (allowed: bool, adjusted_lot: float, reason: str)
         """
+        # NaN compares False everywhere below, so it would sail through every check
+        if not (math.isfinite(sl_distance) and sl_distance > 0 and math.isfinite(lot_size)):
+            return False, 0, f"Invalid SL distance/lot ({sl_distance}, {lot_size})"
+
         # Calculate dollar risk
         risk = sl_distance * lot_size * XAUUSD_POINT_VALUE
 
@@ -161,6 +166,12 @@ class RiskManager:
         sess_key = session if session in self.session_trades else "off"
         self.session_trades[sess_key] = self.session_trades.get(sess_key, 0) + 1
 
+        self._save_state()
+
+    def adopt_open_trade(self, ticket: int):
+        """Track a position that is open on MT5 but missing from saved state
+        (e.g. bot restarted on a new day while a trade was running)."""
+        self.open_trade_ticket = ticket
         self._save_state()
 
     def record_trade_close(self, pnl: float, balance: float = None):

@@ -3622,8 +3622,9 @@ from strategies.strategy_d import StrategyD
 from backtester import TradeSignal
 
 # ─── Configuration ────────────────────────────────────────
-M5_HISTORY_BARS = 500
-M15_HISTORY_BARS = 200
+# Long enough for 14-day daily ATR (~17 trading days of M5) and a settled M15 EMA200
+M5_HISTORY_BARS = 5000
+M15_HISTORY_BARS = 1000
 LOOP_INTERVAL_SECONDS = 10
 TSL_CHECK_INTERVAL_SECONDS = 5   # Check TSL more frequently than signal
 MAX_ERRORS = 5
@@ -3639,6 +3640,7 @@ E_SL_ATR_MULT = 1.5
 E_TP_RR_BASE = 1.5
 E_TP_RR_HIGH = 2.5
 E_INDEPENDENT_MIN_CONF = 70
+MIDAS_MAGIC = 202504  # Magic number MT5Executor.open_trade() stamps on our orders
 
 
 class MidasBot:
@@ -3670,6 +3672,7 @@ class MidasBot:
         # State
         self.last_m5_time = None
         self.error_count = 0
+        self.error_alerted = False
         self.running = True
         self.paused = False
         self.pause_until = None
@@ -3677,6 +3680,10 @@ class MidasBot:
         # Active trade info (for position monitoring)
         self.active_trade_info = None  # Full trade details for updates
         self.active_trade_open_time = None
+
+        # M15 bar time → ever-increasing counter (see _merge_m15)
+        self._m15_seq = {}
+        self._m15_next_seq = 0
 
     # ═════════════════════════════════════════════════════
     # STARTUP
@@ -3701,6 +3708,9 @@ class MidasBot:
         if not self.live_e.loaded:
             print("  WARNING: Strategy E unavailable. Running A-D only.")
 
+        # Pick up a position left open by a previous run
+        self._reconcile_open_position()
+
         # Register Telegram commands
         self._register_commands()
         self.notifier.start_polling()
@@ -3724,6 +3734,41 @@ class MidasBot:
             self.notifier.error(f"Fatal: {str(e)[:200]}")
         finally:
             self._shutdown()
+
+    def _reconcile_open_position(self):
+        """Sync risk/TSL state with what is actually open on MT5.
+
+        Saved state is dropped on a new day, and TSL/trade info is never
+        saved, so after a restart the bot could forget a running trade and
+        open a second one, or stop trailing the stop.
+        """
+        positions = self.mt5.get_open_positions()
+        if positions is None:
+            print("  WARNING: could not read MT5 positions at startup")
+            return
+        ours = [p for p in positions if p["magic"] == MIDAS_MAGIC]
+        if not ours:
+            return  # A stale saved ticket is cleared by _monitor_and_trail()
+
+        pos = next((p for p in ours if p["ticket"] == self.risk.open_trade_ticket), ours[0])
+        if self.risk.open_trade_ticket != pos["ticket"]:
+            self.risk.adopt_open_trade(pos["ticket"])
+
+        self.active_trade_open_time = None  # pos["time"] is broker server time, not comparable with now()
+        self.active_trade_info = {
+            "ticket": pos["ticket"], "direction": pos["direction"],
+            "entry_price": pos["entry_price"], "sl_price": pos["sl"],
+            "tp_price": pos["tp"], "lot_size": pos["volume"],
+            "source": "resumed", "regime": "", "session": "",
+        }
+        if pos["sl"] > 0 and pos["tp"] > 0:
+            self.tsl.start_tracking({
+                "ticket": pos["ticket"], "direction": pos["direction"],
+                "entry_price": pos["entry_price"], "sl_price": pos["sl"],
+                "tp_price": pos["tp"], "lot_size": pos["volume"],
+            })
+        print(f"  Resumed open position {pos['ticket']} "
+              f"({pos['direction'].upper()} {pos['volume']} @ {pos['entry_price']:.2f})")
 
     def _print_banner(self):
         print("=" * 60)
@@ -3785,6 +3830,7 @@ class MidasBot:
                 self.last_m5_time = bar_time
                 self._process_bar()
                 self.error_count = 0
+                self.error_alerted = False
 
             except KeyboardInterrupt:
                 raise
@@ -3792,6 +3838,12 @@ class MidasBot:
                 self.error_count += 1
                 print(f"  ⚠️ Error ({self.error_count}): {e}")
                 if self.error_count >= MAX_ERRORS:
+                    # Without this, a repeating error silently stops all trading.
+                    # Alert once per failure streak, not on every reconnect.
+                    if not self.error_alerted:
+                        self.error_alerted = True
+                        self.notifier.error(f"{MAX_ERRORS} errors in a row, reconnecting MT5. "
+                                            f"Last: {type(e).__name__}: {str(e)[:200]}")
                     print("  Reconnecting MT5...")
                     self.mt5.reconnect()
                     self.error_count = 0
@@ -4091,6 +4143,8 @@ class MidasBot:
 
         # Check if position still open
         positions = self.mt5.get_open_positions()
+        if positions is None:
+            return  # MT5 call failed — don't mistake that for "position closed"
         our_tickets = [p["ticket"] for p in positions]
 
         if self.risk.open_trade_ticket not in our_tickets:
@@ -4113,7 +4167,12 @@ class MidasBot:
                 success = self.mt5.modify_sl_tp(
                     self.risk.open_trade_ticket, new_sl=new_sl
                 )
-                if success:
+                if not success:
+                    # Broker kept the old SL; undo so the move is retried
+                    self.tsl.revert_last_update()
+                else:
+                    if self.active_trade_info:
+                        self.active_trade_info["current_sl"] = new_sl
                     print(f"  📐 TSL: {old_sl:.2f} → {new_sl:.2f} | {tsl_result['reason']}")
                     self.logger.log_tsl_change(
                         self.risk.open_trade_ticket, old_sl, new_sl, tsl_result["reason"]
@@ -4135,21 +4194,29 @@ class MidasBot:
     def _handle_closed(self):
         """Handle a position closed by broker (SL/TP/TSL hit)."""
         ticket = self.risk.open_trade_ticket
+        balance_before = self.risk.current_balance
 
+        pnl, exit_price, reason = None, 0, "unknown"
         try:
             import MetaTrader5 as mt5
-            deals = mt5.history_deals_get(position=ticket)
-            if deals and len(deals) >= 2:
-                close_deal = deals[-1]
-                pnl = close_deal.profit + close_deal.commission + close_deal.swap
-                exit_price = close_deal.price
-                reason = "tp_hit" if pnl > 0 else "sl_hit"
-            else:
-                pnl, exit_price, reason = 0, 0, "unknown"
-        except Exception:
-            pnl, exit_price, reason = 0, 0, "unknown"
+            # The closing deal can take a moment to appear in history
+            for _ in range(3):
+                deals = mt5.history_deals_get(position=ticket)
+                if deals and len(deals) >= 2:
+                    # Sum every deal: entry commission + partial closes + final close
+                    pnl = sum(d.profit + d.commission + d.swap for d in deals)
+                    exit_price = deals[-1].price
+                    reason = "tp_hit" if pnl > 0 else "sl_hit"
+                    break
+                time.sleep(1)
+        except Exception as e:
+            print(f"  WARNING: deal history lookup failed: {e}")
 
-        balance = self.mt5.get_balance()
+        balance = self.mt5.get_balance() or balance_before  # 0.0 means MT5 call failed
+        if pnl is None:
+            # Never record 0: that would hide a loss from the daily loss limit
+            pnl = balance - balance_before
+            print(f"  WARNING: no deal history for {ticket}; PnL from balance change")
         duration = 0
         if self.active_trade_open_time:
             duration = int((datetime.now() - self.active_trade_open_time).total_seconds() / 60)
@@ -4178,8 +4245,14 @@ class MidasBot:
 
     def _build_features(self) -> Optional[pd.DataFrame]:
         """Fetch live data and compute all features."""
-        df_m5 = self.mt5.fetch_bars("M5", M5_HISTORY_BARS)
-        df_m15 = self.mt5.fetch_bars("M15", M15_HISTORY_BARS)
+        df_m5 = self.mt5.fetch_bars("M5", M5_HISTORY_BARS + 1)
+        df_m15 = self.mt5.fetch_bars("M15", M15_HISTORY_BARS + 1)
+        # The last row of each is the bar that is still forming (opened seconds
+        # ago for M5). Signals must only use closed bars, as in the backtest.
+        if df_m5 is not None:
+            df_m5 = df_m5.iloc[:-1].copy()
+        if df_m15 is not None:
+            df_m15 = df_m15.iloc[:-1].copy()
 
         if df_m5 is None or len(df_m5) < 100 or df_m15 is None or len(df_m15) < 50:
             return None
@@ -4193,6 +4266,19 @@ class MidasBot:
         df_m5 = self.engine.compute_session_range(df_m5)
 
         return self._merge_m15(df_m5, df_m15)
+
+    def _m15_sequence(self, times: pd.Series) -> List[int]:
+        """Give each M15 bar time a stable, ever-increasing number."""
+        seq = []
+        for t in times:  # sorted ascending, so new bars get the next numbers
+            if t not in self._m15_seq:
+                self._m15_seq[t] = self._m15_next_seq
+                self._m15_next_seq += 1
+            seq.append(self._m15_seq[t])
+        if len(self._m15_seq) > 4 * M15_HISTORY_BARS:
+            keep = set(times)
+            self._m15_seq = {t: n for t, n in self._m15_seq.items() if t in keep}
+        return seq
 
     def _merge_m15(self, df_m5, df_m15):
         """Merge M15 features into M5 (same as run_combined_abcd.py)."""
@@ -4215,10 +4301,13 @@ class MidasBot:
 
         m15_cols = list(dict.fromkeys(m15_cols))
         sub = df_m15[m15_cols].copy()
-        orig_idx = sub.index.values
         rename = {c: f"m15_{c}" for c in sub.columns if c != "datetime"}
         sub = sub.rename(columns=rename).rename(columns={"datetime": "m15_datetime_key"})
-        sub["m15_idx"] = orig_idx
+        # Strategies A/B skip any M15 bar whose index isn't higher than the last
+        # one they saw. The row position inside this rolling window is always the
+        # same for the newest bar, so use a counter that keeps increasing across
+        # fetches (and, like the backtest index, counts bars, not clock time).
+        sub["m15_idx"] = self._m15_sequence(sub["m15_datetime_key"])
 
         merged = pd.merge_asof(df_m5, sub, left_on="datetime",
                                 right_on="m15_datetime_key", direction="backward")
@@ -4332,6 +4421,8 @@ class MidasBot:
 
     def _cmd_positions(self) -> str:
         positions = self.mt5.get_open_positions()
+        if positions is None:
+            return "⚠️ Could not read positions from MT5."
         if not positions:
             return "No open positions."
         lines = ["<b>Open Positions:</b>"]

@@ -45,6 +45,7 @@ class TSLManager:
         self.breakeven_done = False
         self.last_update_time = None
         self.tsl_history = []  # Log of TSL adjustments
+        self._before_update = None  # State snapshot for revert_last_update()
 
     def start_tracking(self, trade: Dict):
         """
@@ -95,6 +96,7 @@ class TSLManager:
         entry = trade["entry_price"]
         current_sl = trade["current_sl"]
         current_tp = trade["current_tp"]
+        self._before_update = (current_sl, self.current_tsl_level, self.breakeven_done)
 
         # Calculate progress toward TP
         if direction == "buy":
@@ -166,6 +168,19 @@ class TSLManager:
             return {"new_sl": round(new_sl, 2), "new_tp": None, "reason": reason}
 
         return None
+
+    def revert_last_update(self):
+        """Undo the last update() when the broker rejected the SL change,
+        so the same move is retried on the next check."""
+        if self.active_trade is None or self._before_update is None:
+            return
+        sl, level, breakeven = self._before_update
+        self.active_trade["current_sl"] = sl
+        self.current_tsl_level = level
+        self.breakeven_done = breakeven
+        if self.tsl_history:
+            self.tsl_history.pop()
+        self._before_update = None
 
     def get_status(self) -> Dict:
         """Get current TSL tracking status."""

@@ -24,6 +24,7 @@ class LiveStrategyE:
         self.model = None
         self.feature_cols = None
         self.loaded = False
+        self.missing_features = None  # Filled on first predict()
         self._load()
 
     def _load(self):
@@ -57,6 +58,13 @@ class LiveStrategyE:
             return 0.5
 
         row = df.iloc[idx]
+
+        if self.missing_features is None:
+            self.missing_features = [c for c in self.feature_cols if c not in df.columns]
+            if self.missing_features:
+                print(f"  WARNING: Strategy E: {len(self.missing_features)}/{len(self.feature_cols)} "
+                      f"model features are not built live and will be NaN: "
+                      f"{', '.join(self.missing_features[:8])}...")
 
         # Build feature vector
         features = []
