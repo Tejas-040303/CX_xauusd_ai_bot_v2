@@ -18,8 +18,8 @@ Usage:
 
 Output:
     data/processed/strategy_e_train_ready_clean.parquet
-    models/strategy_e_clean_W1.txt, W2.txt, W3.txt, final.txt
-    models/strategy_e_clean_metadata.json
+    models/research/strategy_e_clean_W1.txt, W2.txt, W3.txt, final.txt
+    models/research/strategy_e_clean_metadata.json
     backtest_results/strategy_e_clean_backtest.json
 """
 
@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from strategy_e_features import PIPELINE_VERSION, is_debiased_dataset
 
 from config import (
-    DATA_PROCESSED, MODELS_DIR, BACKTEST_DIR,
+    DATA_PROCESSED, RESEARCH_MODELS_DIR, BACKTEST_DIR,
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE, SWING_LOOKBACK,
     MAX_DAILY_LOSS, MAX_TRADE_RISK,
     LOT_SIZE_SINGLE, LOT_SIZE_MIN, LOT_SIZE_MAX,
@@ -338,7 +338,7 @@ def run_backtest(df, feature_cols, prob_threshold):
     max_dd = 0.0
 
     for seg in WF_MODEL_MAP:
-        model_path = MODELS_DIR / seg["model"]
+        model_path = RESEARCH_MODELS_DIR / seg["model"]
         if not model_path.exists():
             print(f"      WARNING: {seg['model']} missing, skipping")
             continue
@@ -636,7 +636,7 @@ def main():
         model, metrics = train_window(X_tr, y_tr, X_te, y_te, feature_cols, wname)
 
         # Save model
-        model_path = MODELS_DIR / f"strategy_e_clean_{wname}.txt"
+        model_path = RESEARCH_MODELS_DIR / f"strategy_e_clean_{wname}.txt"
         model.save_model(str(model_path))
         print(f"    Saved: {model_path.name}")
 
@@ -661,7 +661,7 @@ def main():
         params, final_ds, num_boost_round=final_rounds,
         callbacks=[lgb.log_evaluation(period=500)],
     )
-    final_path = MODELS_DIR / "strategy_e_clean_final.txt"
+    final_path = RESEARCH_MODELS_DIR / "strategy_e_clean_final.txt"
     final_model.save_model(str(final_path))
     print(f"    Saved: {final_path.name}")
 
@@ -806,14 +806,14 @@ def main():
                                  for w, m in all_results.items()},
         "feature_importance_top20": importance.head(20)[["feature", "gain_pct"]].to_dict("records"),
         "pipeline": "clean_retrain",
-        # Read by retrain_e.model_status(): this final model only saw data
-        # before HOLDOUT_START, so the live bot will consider it stale and
-        # retrain on recent data unless started with --skip-retrain.
+        # Research model (models/research/): trained only on data before
+        # HOLDOUT_START, so everything after it is out-of-sample for backtests.
+        # The live bot never loads it; retrain_e.py builds the live model.
         "pipeline_version": PIPELINE_VERSION if is_debiased_dataset(src_path) else 1,
         "trained_through": str(final_train["datetime"].max()),
     }
 
-    meta_path = MODELS_DIR / "strategy_e_clean_metadata.json"
+    meta_path = RESEARCH_MODELS_DIR / "strategy_e_clean_metadata.json"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, default=str)
 
