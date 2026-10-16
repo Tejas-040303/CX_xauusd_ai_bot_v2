@@ -363,7 +363,7 @@ class TelegramNotifier:
             f"Regime     : ON\n"
             f"Dynamic TSL: ON\n"
             f"Lot Range  : 0.01-0.05\n"
-            f"Risk Cap   : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day\n"
+            f"Risk Cap   : ${MAX_TRADE_RISK:.2f}/trade, ${MAX_DAILY_LOSS:.2f}/day\n"
             f"Time       : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.send(msg)

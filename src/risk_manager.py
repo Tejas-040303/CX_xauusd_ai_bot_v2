@@ -64,6 +64,7 @@ class RiskManager:
         # Account tracking
         self.starting_balance = ACCOUNT_BALANCE
         self.current_balance = ACCOUNT_BALANCE
+        self.account_login = None  # MT5 account the saved state belongs to
 
         # Load persisted state
         self._load_state()
@@ -136,23 +137,28 @@ class RiskManager:
         # Calculate dollar risk
         risk = sl_distance * lot_size * XAUUSD_POINT_VALUE
 
+        reason = "OK"
         if risk > MAX_TRADE_RISK:
-            # Try to reduce lot
+            # Reduce the lot. Round DOWN to the 0.01 step: rounding to nearest
+            # (0.015 → 0.02) could land back above the cap and block a trade
+            # that fits at 0.01.
             max_lot = MAX_TRADE_RISK / (XAUUSD_POINT_VALUE * sl_distance)
-            adjusted_lot = max(LOT_SIZE_MIN, round(max_lot * 100) / 100)
+            adjusted_lot = math.floor(max_lot * 100 + 1e-9) / 100
+            if adjusted_lot < LOT_SIZE_MIN:
+                min_risk = sl_distance * LOT_SIZE_MIN * XAUUSD_POINT_VALUE
+                return False, 0, f"Risk ${min_risk:.2f} exceeds ${MAX_TRADE_RISK} even at min lot"
 
-            new_risk = sl_distance * adjusted_lot * XAUUSD_POINT_VALUE
-            if new_risk > MAX_TRADE_RISK:
-                return False, 0, f"Risk ${new_risk:.2f} exceeds ${MAX_TRADE_RISK} even at min lot"
-
-            return True, adjusted_lot, f"Lot adjusted {lot_size}→{adjusted_lot} for risk cap"
+            reason = f"Lot adjusted {lot_size}→{adjusted_lot} for risk cap"
+            lot_size = adjusted_lot
+            risk = sl_distance * lot_size * XAUUSD_POINT_VALUE
+            # ...and still subject to the daily budget check below
 
         # Check remaining daily budget
         remaining = MAX_DAILY_LOSS + self.daily_pnl
         if risk > remaining:
             return False, 0, f"Risk ${risk:.2f} exceeds daily remaining ${remaining:.2f}"
 
-        return True, lot_size, "OK"
+        return True, lot_size, reason
 
     # ─── Trade Recording ──────────────────────────────────
 
@@ -168,6 +174,29 @@ class RiskManager:
         self.session_trades[sess_key] = self.session_trades.get(sess_key, 0) + 1
 
         self._save_state()
+
+    def bind_account(self, login) -> bool:
+        """Tie the saved state to the MT5 account it belongs to.
+
+        If the terminal is now logged into a different account, today's PnL,
+        trade counts, cooldown and open ticket belong to the old account:
+        reset them. Returns True when that happened.
+        """
+        if login is None:
+            return False
+        switched = self.account_login is not None and self.account_login != login
+        if switched:
+            print(f"  MT5 account changed ({self.account_login} → {login}): "
+                  f"resetting today's risk counters")
+            self.daily_pnl = 0.0
+            self.daily_trades = 0
+            self.session_trades = {k: 0 for k in self.session_trades}
+            self.is_daily_locked = False
+            self.last_trade_time = None
+            self.open_trade_ticket = None
+        self.account_login = login
+        self._save_state()
+        return switched
 
     def adopt_open_trade(self, ticket: int):
         """Track a position that is open on MT5 but missing from saved state
@@ -229,6 +258,7 @@ class RiskManager:
             "last_trade_time": self.last_trade_time.isoformat() if self.last_trade_time else None,
             "open_trade_ticket": self.open_trade_ticket,
             "current_balance": round(self.current_balance, 2),
+            "account_login": self.account_login,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -249,6 +279,7 @@ class RiskManager:
                 state = json.load(f)
 
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            self.account_login = state.get("account_login")
 
             # Only restore if same day
             if state.get("current_date") == today:

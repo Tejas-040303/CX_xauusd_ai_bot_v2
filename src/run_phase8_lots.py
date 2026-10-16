@@ -12,6 +12,7 @@ Usage:
     python run_phase8_lots.py --mode both
 """
 
+import math
 import argparse
 import json
 import sys
@@ -214,7 +215,7 @@ class DynamicLotBacktester(Backtester):
             sl_dist_dollars = abs(entry_price - signal.sl_price) * lot * XAUUSD_POINT_VALUE
             if sl_dist_dollars > MAX_TRADE_RISK:
                 max_lot = MAX_TRADE_RISK / (abs(entry_price - signal.sl_price) * XAUUSD_POINT_VALUE)
-                lot = max(0.01, round(max_lot, 2))
+                lot = max(0.01, math.floor(max_lot * 100 + 1e-9) / 100)  # round down, as live
                 sl_dist_dollars = abs(entry_price - signal.sl_price) * lot * XAUUSD_POINT_VALUE
                 if sl_dist_dollars > MAX_TRADE_RISK:
                     continue

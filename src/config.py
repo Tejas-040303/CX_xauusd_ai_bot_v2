@@ -38,16 +38,32 @@ DATA_START_YEAR = 2021
 DATA_END_YEAR = 2026  # Up to current
 
 # ─── The5ers Rules ───────────────────────────────────────
+# Starting balance of the account the bot trades. EVERY dollar limit below
+# (and the lot sizer's drawdown zones) scales from it — change only this when
+# you switch account size. main.py warns if MT5's balance is far from it.
 ACCOUNT_BALANCE = 500
-PROFIT_TARGET =  ACCOUNT_BALANCE * 1.10          # +10%
-MAX_LOSS_LEVEL =  ACCOUNT_BALANCE * 0.90         # -10% total drawdown
-DAILY_LOSS_LIMIT_5ERS =  ACCOUNT_BALANCE * 0.05   # -5% per day ($250)
+PROFIT_TARGET = ACCOUNT_BALANCE * 1.10          # +10%                 ($550 on $500)
+MAX_LOSS_LEVEL = ACCOUNT_BALANCE * 0.90         # -10% total drawdown  ($450 on $500)
+DAILY_LOSS_LIMIT_5ERS = ACCOUNT_BALANCE * 0.05  # -5% per day, hard    ($25 on $500)
 MIN_PROFITABLE_DAYS = 3
 MAX_INACTIVE_DAYS = 30
 
 # ─── Risk Settings (Our Safety Buffer) ──────────────────
-MAX_DAILY_LOSS = 100          # Below The5ers $250 limit
-MAX_TRADE_RISK =  ACCOUNT_BALANCE * 0.10           # Per trade max loss in USD ($50)
+# Fractions of ACCOUNT_BALANCE. Our daily stop must trip before The5ers' 5%.
+# Per-trade risk is the loss if the SL is hit; validate_trade_risk() also
+# refuses any trade whose SL could push the day past MAX_DAILY_LOSS.
+# Gold's minimum lot (0.01) loses $1 per $1 move, so with a typical $3-7 stop
+# the smallest trade already risks ~$3-7: trades that can't fit under
+# MAX_TRADE_RISK even at 0.01 lot are skipped ("exceeds ... even at min lot").
+MAX_DAILY_LOSS_PCT = 0.04    # Stop for the day at -4%       ($20 on $500)
+MAX_TRADE_RISK_PCT = 0.015   # Max loss per trade 1.5%       ($7.50 on $500)
+MAX_DAILY_LOSS = round(ACCOUNT_BALANCE * MAX_DAILY_LOSS_PCT, 2)
+MAX_TRADE_RISK = round(ACCOUNT_BALANCE * MAX_TRADE_RISK_PCT, 2)
+
+if not (0 < MAX_TRADE_RISK <= MAX_DAILY_LOSS < DAILY_LOSS_LIMIT_5ERS):
+    raise ValueError(
+        f"Risk settings out of order: need 0 < per-trade (${MAX_TRADE_RISK}) <= "
+        f"our daily stop (${MAX_DAILY_LOSS}) < The5ers daily limit (${DAILY_LOSS_LIMIT_5ERS})")
 LOT_SIZE_MIN = 0.01
 LOT_SIZE_MAX = 0.05
 LOT_SIZE_SINGLE = 0.01       # 1 strategy triggers
@@ -97,8 +113,8 @@ SWING_LOOKBACK = 5  # Candles on each side to confirm swing high/low
 BACKTEST_TRAIN_END = "2024-06-30"     # Train: 2021-01-01 to 2024-06-30
 BACKTEST_FORWARD_START = "2024-07-01"  # Forward: 2024-07-01 to 2026-present
 
-# Starting capital for backtest
-BACKTEST_INITIAL_CAPITAL = 5000
+# Starting capital for backtest — same account the limits above are sized for
+BACKTEST_INITIAL_CAPITAL = ACCOUNT_BALANCE
 
 # Point value for XAUUSD (1 lot = 100 oz, $1 move = $100 per lot)
 XAUUSD_POINT_VALUE = 100  # $ per lot per $1 price move

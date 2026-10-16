@@ -3606,7 +3606,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     ATR_PERIOD, PIP_VALUE, XAUUSD_POINT_VALUE, MT5_SYMBOL,
-    SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE,
+    SPREAD_SIMULATION_PIPS, LOT_SIZE_SINGLE, ACCOUNT_BALANCE, DAILY_LOSS_LIMIT_5ERS,
     MAX_TRADE_RISK, MAX_DAILY_LOSS, CONFIDENCE_THRESHOLD, SESSIONS,
     BROKER_UTC_OFFSET_HOURS,
 )
@@ -3708,8 +3708,12 @@ class MidasBot:
             return
 
         acc = self.mt5.get_account_info()
-        balance = acc.get("balance", 5000)
+        balance = acc.get("balance", ACCOUNT_BALANCE)
+        if self.risk.bind_account(acc.get("login")):
+            self.notifier.error(f"MT5 account changed to {acc.get('login')}: "
+                                f"today's risk counters were reset")
         self.risk.update_balance(balance)
+        self._check_account_size(balance)
 
         # Broker clock vs. what the session features assume
         self._check_broker_utc_offset()
@@ -3819,6 +3823,19 @@ class MidasBot:
         if retrain_e.model_status()["state"] != "fresh":
             self._refresh_strategy_e()
 
+    def _check_account_size(self, balance: float):
+        """All $ limits are sized from config.ACCOUNT_BALANCE; warn if the
+        account MT5 is logged into is a very different size."""
+        print(f"  Risk sized for ${ACCOUNT_BALANCE:,.0f}: ${MAX_TRADE_RISK:.2f}/trade, "
+              f"${MAX_DAILY_LOSS:.2f}/day (The5ers daily ${DAILY_LOSS_LIMIT_5ERS:.2f})")
+        if balance and abs(balance / ACCOUNT_BALANCE - 1) > 0.25:
+            msg = (f"MT5 balance is ${balance:,.2f} but risk limits are sized for "
+                   f"ACCOUNT_BALANCE=${ACCOUNT_BALANCE:,.0f} (${MAX_TRADE_RISK:.2f}/trade, "
+                   f"${MAX_DAILY_LOSS:.2f}/day). Set ACCOUNT_BALANCE in config.py "
+                   f"to this account's starting balance.")
+            print(f"  WARNING: {msg}")
+            self.notifier.error(msg)
+
     def _check_broker_utc_offset(self):
         """Warn if the broker's clock isn't what the session features assume."""
         offset = self.mt5.get_broker_utc_offset()
@@ -3844,7 +3861,8 @@ class MidasBot:
         print(f"  Regime       : ON")
         print(f"  Dynamic TSL  : ON")
         print(f"  Dynamic Lots : 0.01-0.05")
-        print(f"  Risk Cap     : ${MAX_TRADE_RISK}/trade, ${MAX_DAILY_LOSS}/day")
+        print(f"  Risk Cap     : ${MAX_TRADE_RISK:.2f}/trade, ${MAX_DAILY_LOSS:.2f}/day "
+              f"(sized for ${ACCOUNT_BALANCE:,.0f})")
         print(f"  Session Lim  : 2 per session")
         print(f"  Cooldown     : 10 min")
 

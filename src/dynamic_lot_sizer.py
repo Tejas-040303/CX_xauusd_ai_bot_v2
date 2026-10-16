@@ -13,7 +13,7 @@ Also adjusts SL/TP:
   - TP extended in trending regimes with high conviction
 
 Lot range: 0.01 (minimum) → 0.05 (maximum)
-Risk cap: MAX_TRADE_RISK ($40) always enforced regardless of lot
+Risk cap: MAX_TRADE_RISK (config, % of ACCOUNT_BALANCE) always enforced regardless of lot
 
 Usage:
     from dynamic_lot_sizer import DynamicLotSizer
@@ -85,12 +85,14 @@ REGIME_TP_ADJ = {
 
 # Drawdown proximity multiplier
 # As daily PnL approaches -MAX_DAILY_LOSS, reduce lot
+# Thresholds are fractions of MAX_DAILY_LOSS, so they scale with account size
+# (on $500: -$4 / -$10 / -$16 / -$20).
 DRAWDOWN_ZONES = [
-    (-20, 1.0),    # PnL > -$20 → full lot
-    (-50, 0.7),    # PnL > -$50 → reduce 30%
-    (-80, 0.4),    # PnL > -$80 → reduce 60%
-    (-100, 0.0),   # -$80 ≥ PnL > -$100 → no new trades (lot 0)
-]                  # PnL ≤ -$100 → also 0; RiskManager locks the day anyway
+    (-0.2 * MAX_DAILY_LOSS, 1.0),  # PnL > -20% of daily stop → full lot
+    (-0.5 * MAX_DAILY_LOSS, 0.7),  # PnL > -50%               → reduce 30%
+    (-0.8 * MAX_DAILY_LOSS, 0.4),  # PnL > -80%               → reduce 60%
+    (-1.0 * MAX_DAILY_LOSS, 0.0),  # -80% ≥ PnL > -100%       → no new trades (lot 0)
+]                                  # PnL ≤ -100% → also 0; RiskManager locks the day anyway
 
 # Recent performance (streak-based)
 # Winning streak → cautiously increase, losing streak → reduce
