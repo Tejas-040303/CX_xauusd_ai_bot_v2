@@ -116,7 +116,7 @@ No files involved. This is done entirely in the terminal.
 7. Leave the terminal **running and logged in**. The bot cannot start it.
 8. **Nothing to edit for account size.** Risk limits are percentages that the
    bot sizes from this account at startup and every broker midnight (on $500:
-   $7.50 per trade, $20/day, below the hard 5% = $25). The fixed max-loss floor uses
+   up to $15 per trade, $20/day, below the hard 5% = $25). The fixed max-loss floor uses
    the account's deposit history; set `ACCOUNT_BALANCE` in `src/config.py` only
    if that history is wrong. Check the startup lines `Initial balance ...` and
    `Today's base ...`.

@@ -137,6 +137,9 @@ class Backtester:
         equity_curve = [capital]
         equity_times = [df["datetime"].iloc[0]]
         trades: List[Trade] = []
+        # Signals the strategy produced but that didn't become trades, by reason
+        skipped = {}
+        signals = 0
         daily_states: Dict[str, DailyState] = {}
 
         # Track active position
@@ -243,8 +246,10 @@ class Backtester:
 
             if signal is None:
                 continue
+            signals += 1
 
             if signal.confidence < CONFIDENCE_THRESHOLD:
+                skipped["confidence below threshold"] = skipped.get("confidence below threshold", 0) + 1
                 continue
 
             # ─── Risk checks ──────────────────────────────
@@ -263,11 +268,15 @@ class Backtester:
                 # Recalculate
                 sl_distance_dollars = abs(entry_price - signal.sl_price) * lot * XAUUSD_POINT_VALUE
                 if sl_distance_dollars > MAX_TRADE_RISK:
-                    continue  # Still too risky, skip
+                    # Even the minimum lot risks more than the per-trade cap
+                    key = f"stop too wide for ${MAX_TRADE_RISK:g} cap at min lot"
+                    skipped[key] = skipped.get(key, 0) + 1
+                    continue
 
             # Check remaining daily budget
             remaining_daily = MAX_DAILY_LOSS + daily.pnl  # How much we can still lose today
             if sl_distance_dollars > remaining_daily:
+                skipped["would exceed today's remaining budget"] = skipped.get("would exceed today's remaining budget", 0) + 1
                 continue  # This trade could breach daily limit
 
             # ─── Open trade ───────────────────────────────
@@ -341,6 +350,8 @@ class Backtester:
             "equity_times": equity_times,
             "daily_states": daily_states,
             "metrics": metrics,
+            "signals": signals,
+            "skipped_signals": skipped,
         }
 
         if self.verbose:
@@ -587,6 +598,13 @@ class Backtester:
         print(f"  Max Drawdown:           ${m['max_drawdown_dollars']:>10.2f} ({m['max_drawdown_pct']:.1f}%)")
         print(f"  Max Consecutive Losses: {m['max_consecutive_losses']:>10}")
         print(f"  Profitable Months:      {m['profitable_months_pct']:>9.1f}%")
+
+        if "signals" in results:
+            skipped = results.get("skipped_signals", {})
+            print(f"\n  {'SIGNALS':}")
+            print(f"  Signals → trades:       {results['signals']:>6} → {m['num_trades']}")
+            for reason, count in sorted(skipped.items(), key=lambda kv: -kv[1]):
+                print(f"    skipped: {reason:<38} {count:>6}")
 
         # Validation check
         print(f"\n  {'VALIDATION CHECK':}")

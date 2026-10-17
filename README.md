@@ -168,7 +168,7 @@ MT5 account itself, so nothing needs editing when the account size changes:
 | Control | Internal (`config.py`) | Hard limit (The5ers-style) | On a $500 day |
 |---|---|---|---|
 | Daily loss | `MAX_DAILY_LOSS_PCT` 4% of day's base | 5% of day's base | $20 (hard $25) |
-| Per-trade risk | `MAX_TRADE_RISK_PCT` 1.5% of day's base | — | $7.50 |
+| Per-trade risk (ceiling) | `MAX_TRADE_RISK_PCT` 3% of day's base | — | $15 |
 | Total drawdown | — | 10% below initial balance (fixed) | floor $450 |
 | Lot-size reduction | at −20/−50/−80% of the day's stop; no new trades past −80% | — | −$4/−$10/−$16 |
 | Lot size | 0.01 – 0.05 (capped by per-trade risk) | — | |
@@ -183,8 +183,9 @@ shows the live numbers. Backtests use `BACKTEST_INITIAL_CAPITAL` ($500) for the
 same percentages.
 
 On a small account the minimum lot dominates: 0.01 lot loses $1 per $1 gold
-move, so a $3–7 stop already risks $3–7. Trades that exceed the per-trade cap
-even at 0.01 lot are skipped and logged.
+move, so a stop $X away risks at least $X. Trades that exceed the per-trade cap
+even at 0.01 lot are skipped and logged; backtest reports list every skipped
+signal by reason under **SIGNALS** (signals → trades).
 
 `RiskManager` persists to `logs/daily_state.json`, so limits survive a restart —
 a crash-loop cannot reset your daily loss counter.
