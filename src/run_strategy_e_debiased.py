@@ -38,6 +38,7 @@ from config import (
     SESSION_LIMITS, SESSIONS, SWING_LOOKBACK,
 )
 from strategy_e_data_prep import LABEL_COL, WALK_FORWARD_WINDOWS, HOLDOUT_START
+from strategy_e_features import debias_swing_features as shared_debias
 
 
 # ─── Configuration ────────────────────────────────────────
@@ -81,91 +82,15 @@ WF_MODEL_MAP = [
 # ═════════════════════════════════════════════════════════
 
 def debias_swing_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fix look-ahead bias in swing point features.
-
-    Original: swing_high[i] = 1 if bar i is a local max (uses bars i-5 to i+5)
-    Problem:  In real-time, you can't confirm until bar i+5
-
-    Fix: Shift all swing-derived features FORWARD by SWING_LOOKBACK bars.
-    This means swing_high[i] = 1 becomes visible only at bar i + SWING_LOOKBACK.
-
-    Also re-derives all downstream features: last_swing_high, dist_to_swing_*,
-    equal highs/lows, BOS levels.
-    """
-    n = SWING_LOOKBACK
-    df = df.copy()
-
-    print(f"    Debiasing swing features (shifting by {n} bars)...")
-
-    # ── Shift the core swing detection by N bars ──────────
-    # swing_high at bar i should only be "known" at bar i+N
-    for col in ["swing_high", "swing_low"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
-    for col in ["swing_high_price", "swing_low_price"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    # ── Re-derive downstream features ─────────────────────
-    # last_swing_high/low: forward-fill from shifted swing prices
-    if "swing_high_price" in df.columns:
-        df["last_swing_high"] = df["swing_high_price"].ffill()
-        df["dist_to_swing_high"] = df["close"] - df["last_swing_high"]
-
-    if "swing_low_price" in df.columns:
-        df["last_swing_low"] = df["swing_low_price"].ffill()
-        df["dist_to_swing_low"] = df["close"] - df["last_swing_low"]
-
-    # Normalized versions
-    atr_col = f"atr_{ATR_PERIOD}"
-    if atr_col in df.columns:
-        atr = df[atr_col].replace(0, np.nan)
-        if "dist_to_swing_high" in df.columns:
-            df["dist_to_swing_high_atr"] = df["dist_to_swing_high"] / atr
-        if "dist_to_swing_low" in df.columns:
-            df["dist_to_swing_low_atr"] = df["dist_to_swing_low"] / atr
-
-    # ── Shift BOS features ────────────────────────────────
-    # BOS detection depends on swing points, so it also has look-ahead
-    for col in ["bos_bull", "bos_bear"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
-    for col in ["bos_bull_level", "bos_bear_level",
-                "ob_bull_high", "ob_bull_low", "ob_bear_high", "ob_bear_low",
-                "ob_bull_impulse_size", "ob_bear_impulse_size"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    # ── Shift equal highs/lows ────────────────────────────
-    for col in ["equal_highs", "equal_lows", "equal_highs_count", "equal_lows_count",
-                "equal_highs_level", "equal_lows_level"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    # Re-derive forward-filled versions
-    if "equal_highs_level" in df.columns:
-        df["last_equal_highs_level"] = df["equal_highs_level"].ffill()
-    if "equal_lows_level" in df.columns:
-        df["last_equal_lows_level"] = df["equal_lows_level"].ffill()
-
-    # Re-derive distances
-    if "last_equal_highs_level" in df.columns and atr_col in df.columns:
-        df["dist_to_eq_highs_atr"] = (df["close"] - df["last_equal_highs_level"]) / atr
-    if "last_equal_lows_level" in df.columns and atr_col in df.columns:
-        df["dist_to_eq_lows_atr"] = (df["close"] - df["last_equal_lows_level"]) / atr
-
-    # ── Shift M15-derived BOS features ────────────────────
-    # M15 bars = 3x M5, so M15 swing lookback of 5 M15 bars = 15 M5 bars
-    # But since we merged M15 features using merge_asof (backward), the M15
-    # BOS features are already lagged by up to 15 minutes. Shifting by
-    # SWING_LOOKBACK M5 bars (25 min) provides conservative debiasing.
+    """For datasets built before strategy_e_features existed (no .json
+    sidecar). Uses the shared implementation so the fix for every
+    swing-derived feature lives in one place."""
+    print(f"    Debiasing swing features (shifting by {SWING_LOOKBACK} bars)...")
+    df = shared_debias(df)
+    # Already merged onto M5 here: n M15 bars = 3n M5 bars
     for col in ["m15_bos_bull", "m15_bos_bear"]:
         if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
+            df[col] = df[col].shift(3 * SWING_LOOKBACK).fillna(0).astype(int)
     return df
 
 

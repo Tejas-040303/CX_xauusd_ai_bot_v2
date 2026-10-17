@@ -274,7 +274,7 @@ Confirm, in order:
 - [ ] Banner prints
 - [ ] `MT5 connected` with the **new** account number and balance
 - [ ] `Strategy E model is up to date (...)` — or a retrain that ends in `✅ Strategy E retrained`
-- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v2, data through <recent date>)`
+- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v4, data through <recent date>)`
 - [ ] `Broker server time: UTC+3` in summer / `UTC+2` in winter, with no warning
       after it (a warning means the broker's clock rule differs — README §8)
 - [ ] `Telegram command listener started` (not `Telegram: disabled`)

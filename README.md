@@ -347,6 +347,27 @@ of future data) and the ATR-relative OB/equal-level distances were computed
 before debiasing. Feature pipeline is versioned (`PIPELINE_VERSION`); a model
 from an older version is retrained automatically.
 
+Pipeline v4 removed the leaks behind E's too-good backtest (every month
+profitable, Sharpe ~12). Each was found by a truncation test: build the features
+on the full history and again on history cut at bar *i*; any feature at bar *i*
+that differs was reading the future.
+- `pullback_depth_*` (the model's top two features) came from swings *before*
+  the debias shift. They are now re-derived after it.
+- `daily_atr_14` included the current day's full high/low. It now uses
+  finished days only.
+- The Asian range was visible on bars from broker midnight to 00:00 UTC, which
+  come before that day's Asian window. `asian_session_candles` showed the
+  full-session count during the session.
+- Equal highs/lows grouped each swing with matching swings up to 100 candles
+  ahead. A swing is now compared with earlier swings only. Strategy A reads
+  these flags, so its backtest changes too.
+- `m15_bos_*` was shifted by 5 M5 bars (25 min); an M15 swing needs 5 M15 bars
+  (75 min).
+
+The A–D runners also joined M15 bars by open time. They now use
+`timeframes.merge_closed_m15()`. Expect every backtest to come out lower after
+v4; the new numbers are the honest ones.
+
 **4. Large blocks of dead code.**
 `main.py` is 4,396 lines of which the first 3,570 are a commented-out earlier
 version; the live bot starts at line 3571. `feature_engineering.py` is 2,193

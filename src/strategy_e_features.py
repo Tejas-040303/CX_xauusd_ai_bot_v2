@@ -20,7 +20,8 @@ Pipeline (order matters):
      (The old merge used open times, which leaked up to 10 minutes of the
      future in training — live trading can never see that.)
   4. Debias swing-derived features (shift by SWING_LOOKBACK — a swing is
-     only confirmed SWING_LOOKBACK bars after it happens)
+     only confirmed SWING_LOOKBACK bars after it happens), and re-derive
+     everything built on them (distances, pullback depth)
   5. ATR-relative price features — AFTER debiasing, so they don't
      reintroduce the look-ahead step 4 removed
   6. Integer-encode categoricals
@@ -40,7 +41,7 @@ import pandas as pd
 from config import ATR_PERIOD, SWING_LOOKBACK, DATA_PROCESSED
 from feature_engineering import FeatureEngine
 
-PIPELINE_VERSION = 3  # v3: session labels / Asian range in real UTC (DST-aware)
+PIPELINE_VERSION = 4  # v4: pullback depth from debiased swings, daily ATR from finished days
 
 # ─── Labels ──────────────────────────────────────────────
 LABEL_HORIZON_BARS = 12          # 12 M5 bars = 1 hour lookahead
@@ -144,8 +145,9 @@ def debias_swing_features(df: pd.DataFrame) -> pd.DataFrame:
     atr_col = f"atr_{ATR_PERIOD}"
     atr = df[atr_col].replace(0, np.nan) if atr_col in df.columns else None
 
-    for col in ["swing_high", "swing_low", "bos_bull", "bos_bear",
-                "m15_bos_bull", "m15_bos_bear"]:
+    # (m15_bos_* are debiased on the M15 frame before the merge — see
+    # build_e_features — since an M15 swing needs SWING_LOOKBACK *M15* bars)
+    for col in ["swing_high", "swing_low", "bos_bull", "bos_bear"]:
         if col in df.columns:
             df[col] = df[col].shift(n).fillna(0).astype(int)
 
@@ -174,6 +176,12 @@ def debias_swing_features(df: pd.DataFrame) -> pd.DataFrame:
         for side in ["high", "low"]:
             if f"dist_to_swing_{side}" in df.columns:
                 df[f"dist_to_swing_{side}_atr"] = df[f"dist_to_swing_{side}"] / atr
+        # compute_trend built these from the unshifted swings — they were the
+        # model's top two features purely because they peeked ahead
+        if "last_swing_high" in df.columns:
+            df["pullback_depth_bull_atr"] = (df["last_swing_high"] - df["low"]) / atr
+        if "last_swing_low" in df.columns:
+            df["pullback_depth_bear_atr"] = (df["high"] - df["last_swing_low"]) / atr
     return df
 
 
@@ -220,6 +228,11 @@ def build_e_features(df_m5: pd.DataFrame, df_m15: pd.DataFrame,
     with contextlib.redirect_stdout(out) if quiet else contextlib.nullcontext():
         m5 = compute_m5_features(df_m5, engine)
         m15 = compute_m15_features(df_m15, engine)
+    # An M15 swing is confirmed SWING_LOOKBACK M15 bars later (75 min), not
+    # SWING_LOOKBACK M5 bars (25 min), so shift BOS on the M15 frame itself
+    for col in ["bos_bull", "bos_bear"]:
+        if col in m15.columns:
+            m15[col] = m15[col].shift(SWING_LOOKBACK).fillna(0).astype(int)
     df = merge_m15_context(m5, m15)
     df = debias_swing_features(df)
     df = add_relative_price_features(df)

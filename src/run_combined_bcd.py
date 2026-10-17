@@ -23,6 +23,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from timeframes import merge_closed_m15  # M15 bars joined by close time (no look-ahead)
 from config import DATA_RAW, DATA_PROCESSED, BACKTEST_DIR, ATR_PERIOD
 from feature_engineering import FeatureEngine
 from backtester import Backtester, StrategyBase, TradeSignal
@@ -214,13 +215,7 @@ def merge_timeframes(df_m5: pd.DataFrame, df_m15: pd.DataFrame) -> pd.DataFrame:
     df_m15_subset = df_m15_subset.rename(columns={"datetime": "m15_datetime_key"})
     df_m15_subset["m15_idx"] = m15_original_index
 
-    df_merged = pd.merge_asof(
-        df_m5,
-        df_m15_subset,
-        left_on="datetime",
-        right_on="m15_datetime_key",
-        direction="backward",
-    )
+    df_merged = merge_closed_m15(df_m5, df_m15_subset)
 
     df_merged = df_merged.rename(columns={"m15_datetime_key": "m15_datetime"})
     return df_merged

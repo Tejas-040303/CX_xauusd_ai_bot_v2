@@ -30,6 +30,7 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, str(Path(__file__).parent))
 
 import config
+from timeframes import merge_closed_m15  # M15 bars joined by close time (no look-ahead)
 from config import (
     DATA_RAW, DATA_PROCESSED, BACKTEST_DIR, MODELS_DIR,
     ATR_PERIOD, CONFIDENCE_THRESHOLD
@@ -453,8 +454,7 @@ def merge_all(df_m5, df_m15):
     df_sub = df_sub.rename(columns=rename).rename(columns={"datetime": "m15_datetime_key"})
     df_sub["m15_idx"] = idx_vals
 
-    merged = pd.merge_asof(df_m5, df_sub, left_on="datetime",
-                           right_on="m15_datetime_key", direction="backward")
+    merged = merge_closed_m15(df_m5, df_sub)
     merged = merged.rename(columns={"m15_datetime_key": "m15_datetime"})
     return merged
 
