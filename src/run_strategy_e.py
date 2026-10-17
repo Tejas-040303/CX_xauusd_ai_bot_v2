@@ -324,11 +324,20 @@ def run_backtest(model, feature_cols, df, prob_threshold):
 def compute_metrics(trades, equity_curve, final_capital, max_dd_pct, fw_data):
     """Compute all performance metrics from trade list."""
     if not trades:
-        return {
-            "total_pnl": 0, "win_rate": 0, "profit_factor": 0,
-            "total_trades": 0, "trades_per_month": 0,
-            "max_drawdown_pct": 0, "sharpe": 0,
-        }
+        # Same keys as a normal result: the report tables print every
+        # threshold, and a high threshold can easily produce zero trades
+        return {"total_pnl": 0, "pnl_pct": 0, "final_capital": round(final_capital, 2),
+                "win_rate": 0, "profit_factor": 0,
+                "total_trades": 0, "trades_per_month": 0,
+                "max_drawdown_pct": round(max_dd_pct, 1), "sharpe": 0,
+                "avg_win": 0, "avg_loss": 0, "avg_trade": 0,
+                "wins": 0, "losses": 0,
+                "gross_profit": 0, "gross_loss": 0,
+                "profitable_months": 0, "total_months": 0, "profitable_months_pct": 0,
+                "session_breakdown": {}, "direction_breakdown": {},
+                "avg_conf_winning": 0, "avg_conf_losing": 0,
+                "monthly_pnl": {},
+                "equity_curve": equity_curve, "trades": []}
 
     trade_df = pd.DataFrame(trades)
     total_trades = len(trade_df)
