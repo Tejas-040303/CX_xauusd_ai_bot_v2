@@ -412,9 +412,18 @@ def run_backtest(df, feature_cols, prob_threshold):
 
 def compute_metrics(trades, equity_curve, final_capital, max_dd_pct):
     if not trades:
-        return {"total_pnl": 0, "win_rate": 0, "profit_factor": 0,
+        # Same keys as a normal result: the report tables print every
+        # threshold, and a high threshold can easily produce zero trades
+        return {"total_pnl": 0, "pnl_pct": 0, "final_capital": round(final_capital, 2),
+                "win_rate": 0, "profit_factor": 0,
                 "total_trades": 0, "trades_per_month": 0,
-                "max_drawdown_pct": 0, "sharpe": 0}
+                "max_drawdown_pct": round(max_dd_pct, 1), "sharpe": 0,
+                "avg_win": 0, "avg_loss": 0, "avg_trade": 0,
+                "wins": 0, "losses": 0,
+                "profitable_months": 0, "total_months": 0, "profitable_months_pct": 0,
+                "session_breakdown": {}, "direction_breakdown": {},
+                "avg_conf_winning": 0, "avg_conf_losing": 0,
+                "monthly_pnl": {},}
 
     tdf = pd.DataFrame(trades)
     total = len(tdf)
@@ -691,6 +700,8 @@ def main():
     # ── 3-way comparison ──────────────────────────────────
     print(f"\n{'=' * 70}")
     print("3-Way Comparison: BIASED → DEBIASED-TEST → CLEAN-RETRAIN")
+    print("  (BIASED / DEBIAS-TEST columns are historical runs from before the")
+    print("   pipeline v4 leak fixes — kept only as a reference for how much was leak)")
     print(f"{'=' * 70}")
     print(f"  {'Metric':<22s} {'BIASED':>12s} {'DEBIAS-TEST':>14s} {'CLEAN':>12s}")
     print(f"  {'-'*60}")
@@ -704,6 +715,8 @@ def main():
     # ── Strategy comparison ───────────────────────────────
     print(f"\n{'=' * 70}")
     print("Strategy Comparison (Forward Test) — CLEAN")
+    print("  (A–D rows are old hard-coded results from before the M15 close-time")
+    print("   merge fix; rerun run_strategy_*.py for current numbers)")
     print(f"{'=' * 70}")
     print(f"  {'Strategy':<25s} {'PnL':>9} {'WR%':>6} {'PF':>5} {'T/Mo':>6} {'MaxDD':>6}")
     print(f"  {'-'*58}")
