@@ -17,6 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from timeframes import merge_closed_m15  # M15 bars joined by close time (no look-ahead)
 from config import DATA_RAW, DATA_PROCESSED, BACKTEST_DIR, ATR_PERIOD
 from feature_engineering import FeatureEngine
 from backtester import Backtester
@@ -111,13 +112,7 @@ def merge_timeframes(df_m5: pd.DataFrame, df_m15: pd.DataFrame) -> pd.DataFrame:
 
     # As-of merge: for each M5 row, find the most recent M15 row
     # that has datetime <= M5 datetime
-    df_merged = pd.merge_asof(
-        df_m5,
-        df_m15_subset,
-        left_on="datetime",
-        right_on="m15_datetime_key",
-        direction="backward",  # Use most recent M15 candle that's <= M5 time
-    )
+    df_merged = merge_closed_m15(df_m5, df_m15_subset)
 
     # Rename the key column to m15_datetime
     df_merged = df_merged.rename(columns={"m15_datetime_key": "m15_datetime"})

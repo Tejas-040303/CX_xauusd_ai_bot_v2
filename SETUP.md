@@ -116,7 +116,7 @@ No files involved. This is done entirely in the terminal.
 7. Leave the terminal **running and logged in**. The bot cannot start it.
 8. **Nothing to edit for account size.** Risk limits are percentages that the
    bot sizes from this account at startup and every broker midnight (on $500:
-   $7.50 per trade, $20/day, below the hard 5% = $25). The fixed max-loss floor uses
+   up to $15 per trade, $20/day, below the hard 5% = $25). The fixed max-loss floor uses
    the account's deposit history; set `ACCOUNT_BALANCE` in `src/config.py` only
    if that history is wrong. Check the startup lines `Initial balance ...` and
    `Today's base ...`.
@@ -274,7 +274,7 @@ Confirm, in order:
 - [ ] Banner prints
 - [ ] `MT5 connected` with the **new** account number and balance
 - [ ] `Strategy E model is up to date (...)` — or a retrain that ends in `✅ Strategy E retrained`
-- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v2, data through <recent date>)`
+- [ ] `Strategy E loaded: strategy_e_clean_final.txt (N features, pipeline v4, data through <recent date>)`
 - [ ] `Broker server time: UTC+3` in summer / `UTC+2` in winter, with no warning
       after it (a warning means the broker's clock rule differs — README §8)
 - [ ] `Telegram command listener started` (not `Telegram: disabled`)

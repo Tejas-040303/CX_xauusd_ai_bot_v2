@@ -168,7 +168,7 @@ MT5 account itself, so nothing needs editing when the account size changes:
 | Control | Internal (`config.py`) | Hard limit (The5ers-style) | On a $500 day |
 |---|---|---|---|
 | Daily loss | `MAX_DAILY_LOSS_PCT` 4% of day's base | 5% of day's base | $20 (hard $25) |
-| Per-trade risk | `MAX_TRADE_RISK_PCT` 1.5% of day's base | — | $7.50 |
+| Per-trade risk (ceiling) | `MAX_TRADE_RISK_PCT` 3% of day's base | — | $15 |
 | Total drawdown | — | 10% below initial balance (fixed) | floor $450 |
 | Lot-size reduction | at −20/−50/−80% of the day's stop; no new trades past −80% | — | −$4/−$10/−$16 |
 | Lot size | 0.01 – 0.05 (capped by per-trade risk) | — | |
@@ -183,8 +183,9 @@ shows the live numbers. Backtests use `BACKTEST_INITIAL_CAPITAL` ($500) for the
 same percentages.
 
 On a small account the minimum lot dominates: 0.01 lot loses $1 per $1 gold
-move, so a $3–7 stop already risks $3–7. Trades that exceed the per-trade cap
-even at 0.01 lot are skipped and logged.
+move, so a stop $X away risks at least $X. Trades that exceed the per-trade cap
+even at 0.01 lot are skipped and logged; backtest reports list every skipped
+signal by reason under **SIGNALS** (signals → trades).
 
 `RiskManager` persists to `logs/daily_state.json`, so limits survive a restart —
 a crash-loop cannot reset your daily loss counter.
@@ -345,6 +346,27 @@ two leaks in training: M15 context was joined by bar *open* time (up to 10 min
 of future data) and the ATR-relative OB/equal-level distances were computed
 before debiasing. Feature pipeline is versioned (`PIPELINE_VERSION`); a model
 from an older version is retrained automatically.
+
+Pipeline v4 removed the leaks behind E's too-good backtest (every month
+profitable, Sharpe ~12). Each was found by a truncation test: build the features
+on the full history and again on history cut at bar *i*; any feature at bar *i*
+that differs was reading the future.
+- `pullback_depth_*` (the model's top two features) came from swings *before*
+  the debias shift. They are now re-derived after it.
+- `daily_atr_14` included the current day's full high/low. It now uses
+  finished days only.
+- The Asian range was visible on bars from broker midnight to 00:00 UTC, which
+  come before that day's Asian window. `asian_session_candles` showed the
+  full-session count during the session.
+- Equal highs/lows grouped each swing with matching swings up to 100 candles
+  ahead. A swing is now compared with earlier swings only. Strategy A reads
+  these flags, so its backtest changes too.
+- `m15_bos_*` was shifted by 5 M5 bars (25 min); an M15 swing needs 5 M15 bars
+  (75 min).
+
+The A–D runners also joined M15 bars by open time. They now use
+`timeframes.merge_closed_m15()`. Expect every backtest to come out lower after
+v4; the new numbers are the honest ones.
 
 **4. Large blocks of dead code.**
 `main.py` is 4,396 lines of which the first 3,570 are a commented-out earlier

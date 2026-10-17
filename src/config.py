@@ -66,7 +66,11 @@ MAX_INACTIVE_DAYS = 30
 # the smallest trade already risks ~$3-7: on small accounts, trades that can't
 # fit the per-trade cap even at 0.01 lot are skipped ("even at min lot").
 MAX_DAILY_LOSS_PCT = 0.04    # Stop for the day at -4%   ($20 on $500)
-MAX_TRADE_RISK_PCT = 0.015   # Max loss per trade 1.5%   ($7.50 on $500)
+MAX_TRADE_RISK_PCT = 0.03    # Max loss per trade 3%     ($15 on $500)
+# 3% (was 1.5%): on a small account gold's 0.01-lot minimum made the cap
+# skip most wide-stop setups. The cap is a ceiling, not a target — the lot
+# sizer still picks 0.01-0.05 by conviction and stays under it. With a 4%
+# daily stop, one full loss leaves 1% for the rest of the day.
 
 if not (0 < MAX_TRADE_RISK_PCT <= MAX_DAILY_LOSS_PCT < THE5ERS_DAILY_LOSS_PCT):
     raise ValueError(

@@ -1069,6 +1069,7 @@ import numpy as np
 import pandas as pd
 
 from broker_time import to_utc
+from timeframes import merge_closed_m15
 
 from config import (
     EMA_PERIODS, ATR_PERIOD, RSI_PERIOD, ADX_PERIOD,
@@ -1153,13 +1154,7 @@ class FeatureEngine:
         df_m15_sub = df_m15_sub.rename(columns=rename_map)
         df_m15_sub = df_m15_sub.rename(columns={"datetime": "m15_datetime_key"})
 
-        df_merged = pd.merge_asof(
-            df_m5,
-            df_m15_sub,
-            left_on="datetime",
-            right_on="m15_datetime_key",
-            direction="backward",
-        )
+        df_merged = merge_closed_m15(df_m5, df_m15_sub)
         df_merged = df_merged.rename(columns={"m15_datetime_key": "m15_datetime"})
 
         return df_merged
@@ -1483,7 +1478,8 @@ class FeatureEngine:
         BREAKOUT_END = 16    # 16:00 UTC
         EARLY_CUTOFF = 12    # 12:00 UTC
 
-        hour = to_utc(df["datetime"]).dt.hour
+        utc = to_utc(df["datetime"])
+        hour = utc.dt.hour
         date = df["datetime"].dt.date  # broker trading day
 
         # ── Compute Asian range per trading day ──────────
@@ -1514,13 +1510,14 @@ class FeatureEngine:
             how="left",
         )
 
-        # Forward fill for candles that don't have a range yet (early Asian)
-        # Actually the range should only be available AFTER Asian session ends
-        # So null it out during Asian session
-        df.loc[asian_mask, "asian_range_high"] = np.nan
-        df.loc[asian_mask, "asian_range_low"] = np.nan
-        df.loc[asian_mask, "asian_range_width"] = np.nan
-        df.loc[asian_mask, "asian_range_mid"] = np.nan
+        # The range only exists once the Asian session has ended. The broker
+        # day starts 2-3h before the UTC day, so bars from broker midnight to
+        # 00:00 UTC come BEFORE that day's Asian window and must not see it
+        # either. Ready = same UTC date and past the window's end.
+        range_ready = (utc.dt.date == date) & (hour >= ASIAN_END)
+        for col in ["asian_range_high", "asian_range_low", "asian_range_width",
+                    "asian_range_mid", "asian_session_candles"]:
+            df.loc[~range_ready.values, col] = np.nan
 
         # ── Compute Daily ATR from M5 data ─────────────
         # M5 ATR measures 5-minute volatility — wrong scale for 6-hour range comparison
@@ -1530,7 +1527,9 @@ class FeatureEngine:
             day_low=("low", "min"),
         )
         daily_hl["daily_range"] = daily_hl["day_high"] - daily_hl["day_low"]
-        daily_hl["daily_atr_14"] = daily_hl["daily_range"].ewm(span=14, adjust=False).mean()
+        # shift(1): finished days only. Today's high/low isn't known until the
+        # day ends, so including it leaked the rest of the day into every bar.
+        daily_hl["daily_atr_14"] = daily_hl["daily_range"].ewm(span=14, adjust=False).mean().shift(1)
         daily_hl = daily_hl[["daily_atr_14"]].reset_index()
 
         df = df.merge(daily_hl, on="_trade_date", how="left")
@@ -1726,52 +1725,32 @@ class FeatureEngine:
                 last_swing_low_idx = i
 
         # ── Equal Highs/Lows Detection (Liquidity Pools) ──
-        eq_high_count = 0
-        eq_low_count = 0
+        # Each swing is compared with EARLIER swings only. (The old version
+        # grouped a swing with matches up to 100 candles ahead and marked the
+        # last one, so whether a pool showed up at a bar depended on swings
+        # that hadn't happened yet.)
         lookback_candles = 100  # Look within 100 M15 candles
 
-        for i in range(len(swing_highs)):
-            idx_i, price_i = swing_highs[i]
-            atr = atr_vals[idx_i] if not np.isnan(atr_vals[idx_i]) else 2.0
-            tolerance = 0.3 * atr
-            cluster = [(idx_i, price_i)]
+        def mark_equal(swings, side):
+            found = 0
+            for j, (idx_j, price_j) in enumerate(swings):
+                atr = atr_vals[idx_j] if not np.isnan(atr_vals[idx_j]) else 2.0
+                tolerance = 0.3 * atr
+                cluster = [price_j]
+                for idx_i, price_i in reversed(swings[:j]):
+                    if idx_j - idx_i > lookback_candles:
+                        break
+                    if abs(price_i - price_j) <= tolerance:
+                        cluster.append(price_i)
+                if len(cluster) >= 2:
+                    df.iat[idx_j, df.columns.get_loc(f"equal_{side}")] = 1
+                    df.iat[idx_j, df.columns.get_loc(f"equal_{side}_level")] = np.mean(cluster)
+                    df.iat[idx_j, df.columns.get_loc(f"equal_{side}_count")] = len(cluster)
+                    found += 1
+            return found
 
-            for j in range(i + 1, len(swing_highs)):
-                idx_j, price_j = swing_highs[j]
-                if idx_j - idx_i > lookback_candles:
-                    break
-                if abs(price_j - price_i) <= tolerance:
-                    cluster.append((idx_j, price_j))
-
-            if len(cluster) >= 2:
-                # Mark the LAST swing in the cluster
-                last_idx = cluster[-1][0]
-                avg_price = np.mean([p for _, p in cluster])
-                df.iat[last_idx, df.columns.get_loc("equal_highs")] = 1
-                df.iat[last_idx, df.columns.get_loc("equal_highs_level")] = avg_price
-                df.iat[last_idx, df.columns.get_loc("equal_highs_count")] = len(cluster)
-                eq_high_count += 1
-
-        for i in range(len(swing_lows)):
-            idx_i, price_i = swing_lows[i]
-            atr = atr_vals[idx_i] if not np.isnan(atr_vals[idx_i]) else 2.0
-            tolerance = 0.3 * atr
-            cluster = [(idx_i, price_i)]
-
-            for j in range(i + 1, len(swing_lows)):
-                idx_j, price_j = swing_lows[j]
-                if idx_j - idx_i > lookback_candles:
-                    break
-                if abs(price_j - price_i) <= tolerance:
-                    cluster.append((idx_j, price_j))
-
-            if len(cluster) >= 2:
-                last_idx = cluster[-1][0]
-                avg_price = np.mean([p for _, p in cluster])
-                df.iat[last_idx, df.columns.get_loc("equal_lows")] = 1
-                df.iat[last_idx, df.columns.get_loc("equal_lows_level")] = avg_price
-                df.iat[last_idx, df.columns.get_loc("equal_lows_count")] = len(cluster)
-                eq_low_count += 1
+        eq_high_count = mark_equal(swing_highs, "highs")
+        eq_low_count = mark_equal(swing_lows, "lows")
 
         # Forward fill equal highs/lows levels so every candle knows the nearest pool
         df["last_equal_highs_level"] = df["equal_highs_level"].ffill()

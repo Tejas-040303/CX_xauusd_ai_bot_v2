@@ -35,6 +35,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from strategy_e_features import PIPELINE_VERSION, is_debiased_dataset
+from strategy_e_features import debias_swing_features as shared_debias
 
 from config import (
     DATA_PROCESSED, RESEARCH_MODELS_DIR, BACKTEST_DIR,
@@ -128,75 +129,15 @@ EXCLUDE_COLS = [
 # PHASE 1: DATA PREPARATION (with debiasing)
 # ═════════════════════════════════════════════════════════
 
-def debias_swing_features(df):
-    """
-    Shift all swing-derived features forward by SWING_LOOKBACK bars.
-    This removes look-ahead bias for ML training.
-
-    ONLY affects Strategy E's data. feature_engineering.py is untouched.
-    Strategies A-D continue using the original (unshifted) features.
-    """
-    n = SWING_LOOKBACK
-    df = df.copy()
-
-    # ── Core swing detection: shift forward ───────────────
-    for col in ["swing_high", "swing_low"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
-    for col in ["swing_high_price", "swing_low_price"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    # ── Re-derive downstream features ─────────────────────
-    if "swing_high_price" in df.columns:
-        df["last_swing_high"] = df["swing_high_price"].ffill()
-        df["dist_to_swing_high"] = df["close"] - df["last_swing_high"]
-
-    if "swing_low_price" in df.columns:
-        df["last_swing_low"] = df["swing_low_price"].ffill()
-        df["dist_to_swing_low"] = df["close"] - df["last_swing_low"]
-
-    atr_col = f"atr_{ATR_PERIOD}"
-    if atr_col in df.columns:
-        atr = df[atr_col].replace(0, np.nan)
-        if "dist_to_swing_high" in df.columns:
-            df["dist_to_swing_high_atr"] = df["dist_to_swing_high"] / atr
-        if "dist_to_swing_low" in df.columns:
-            df["dist_to_swing_low_atr"] = df["dist_to_swing_low"] / atr
-
-    # ── BOS features (depend on swings) ───────────────────
-    for col in ["bos_bull", "bos_bear"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
-    for col in ["bos_bull_level", "bos_bear_level",
-                "ob_bull_high", "ob_bull_low", "ob_bear_high", "ob_bear_low",
-                "ob_bull_impulse_size", "ob_bear_impulse_size"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    # ── Equal highs/lows (depend on swings) ───────────────
-    for col in ["equal_highs", "equal_lows", "equal_highs_count", "equal_lows_count",
-                "equal_highs_level", "equal_lows_level"]:
-        if col in df.columns:
-            df[col] = df[col].shift(n)
-
-    if "equal_highs_level" in df.columns:
-        df["last_equal_highs_level"] = df["equal_highs_level"].ffill()
-    if "equal_lows_level" in df.columns:
-        df["last_equal_lows_level"] = df["equal_lows_level"].ffill()
-
-    if "last_equal_highs_level" in df.columns and atr_col in df.columns:
-        df["dist_to_eq_highs_atr"] = (df["close"] - df["last_equal_highs_level"]) / atr
-    if "last_equal_lows_level" in df.columns and atr_col in df.columns:
-        df["dist_to_eq_lows_atr"] = (df["close"] - df["last_equal_lows_level"]) / atr
-
-    # ── M15 BOS features ──────────────────────────────────
+def debias_swing_features(df: pd.DataFrame) -> pd.DataFrame:
+    """For datasets built before strategy_e_features existed (no .json
+    sidecar). Uses the shared implementation so the fix for every
+    swing-derived feature lives in one place."""
+    df = shared_debias(df)
+    # Already merged onto M5 here: n M15 bars = 3n M5 bars
     for col in ["m15_bos_bull", "m15_bos_bear"]:
         if col in df.columns:
-            df[col] = df[col].shift(n).fillna(0).astype(int)
-
+            df[col] = df[col].shift(3 * SWING_LOOKBACK).fillna(0).astype(int)
     return df
 
 
